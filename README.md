@@ -652,6 +652,39 @@ x-partner-key: wf_xxx
 x-waba-id: 123456789
 ```
 
+**Response:**
+```json
+{
+  "success": true,
+  "templates": [
+    {
+      "id": "123456789012345",
+      "name": "order_confirmed",
+      "language": "en_US",
+      "category": "UTILITY",
+      "status": "APPROVED",
+      "components": [
+        { "type": "BODY", "text": "Hello {{1}}..." }
+      ]
+    }
+  ],
+  "total": 1
+}
+```
+
+| Field | Type | Note |
+|---|---|---|
+| `id` | string | Meta template id (numeric string) |
+| `name` | string | Template name (unique per WABA) |
+| `language` | string | e.g. `en_US`, `ms`, `id` |
+| `category` | string | `MARKETING` / `UTILITY` / `AUTHENTICATION` |
+| `status` | string | `APPROVED` / `PENDING` / `REJECTED` / `PAUSED` / `DISABLED` / `IN_APPEAL` |
+| `components` | array | Meta component objects (BODY, HEADER, FOOTER, BUTTONS) |
+
+> **Quality + rejection reason:** Not returned by this endpoint. For rejection reason, subscribe to webhook `template.status_updated` (carries `reason`). For quality changes, subscribe to `template.quality_updated` (carries `previous_quality` + `new_quality`).
+
+> **Wrapping convention:** All list endpoints wrap items under a key named after the resource (lowercase plural) — never a bare array. `/clients` → `clients[]`, `/templates` → `templates[]`, `/broadcasts` → `broadcasts[]`, `/events` → `events[]`.
+
 ---
 
 #### Create Template
@@ -1130,13 +1163,24 @@ Additional headers sent with every webhook:
 }
 ```
 
-> **`from`** — Phone number in international format without `+`, e.g. `60123456789`. May contain BSUID instead of phone for users who have adopted WhatsApp usernames (rollout June 2026).
-> **`bsuid`** — 🆔 Business-Scoped User ID (added by Meta April 2026). Format: `CC.xxx` (e.g. `MY.2035200694071263`). Unique per business-user pair — different BSUID for same user across different businesses. Use this as a stable customer identifier that won't change when user adopts a username. May be `null` for very old/legacy webhooks.
+> **`from`** — Phone number in international format without `+`, e.g. `60123456789`. Passed through from Meta `message.from`.
+> **`bsuid`** — 🆔 Business-Scoped User ID (added by Meta April 2026). A **separate field** from `from` — always sent alongside, not as a replacement. Format observed: `CC.<numeric_id>` (e.g. `MY.2035200694071263`, `SG.1234567890123`). Unique per business-user pair — same user gets a different BSUID across different businesses. May be `null` for legacy webhooks or users not yet on a BSUID-aware client. Bridge does **not** validate the format — passed through verbatim from Meta `contacts[0].user_id`.
 > **`type`** — Message type: `text`, `image`, `document`, `audio`, `video`, `location`, `button`, `interactive`, `sticker`, `reaction`, `unknown`
 > **`text`** — Populated for text messages only. For media messages, use `data.raw.message` to get the full media object including `id` for downloading.
 
-**🆔 BSUID & WhatsApp Usernames (June 2026+):**
-Meta is rolling out WhatsApp usernames. When users adopt a username, future webhooks may omit the phone number and only include `bsuid`. **Recommendation:** Store BOTH `from` (phone) AND `bsuid` for each contact. Use BSUID as the stable identifier for repeat customers — phone may disappear, BSUID won't change.
+**🆔 BSUID & WhatsApp Usernames (June 2026+) — detection guidance:**
+
+`data.from` and `data.bsuid` are **two separate fields** in the same payload. Bridge does **not** replace `from` with a BSUID — you receive both. Detect BSUID presence with a null-check, not by regex-matching `from`:
+
+```js
+// ✅ Correct — presence check on the dedicated field
+const hasBsuid = payload.data.bsuid != null;
+
+// ❌ Wrong — don't regex-match data.from; it's always the phone
+if (/^[A-Z]{2}\.\d+$/.test(payload.data.from)) { ... }
+```
+
+**Recommendation:** Persist BOTH `from` (phone) AND `bsuid` against each contact. Use `bsuid` as your stable customer key — phone may change/disappear when the user adopts a WhatsApp username; BSUID won't. The same BSUID also appears as `recipient_bsuid` on `message.sent/delivered/read/failed/echo`, and as `contact_bsuid` on `message.history`.
 
 **Handling different message types:**
 ```javascript
