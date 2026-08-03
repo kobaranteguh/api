@@ -865,23 +865,38 @@ Returns the media file as binary stream. Use the `media_id` from the `message.re
 ### Media
 
 #### Upload Media (Get a media_id)
+
+This endpoint is **URL-based, not a multipart file receiver**. Host the file at a publicly reachable HTTPS URL — Bridge downloads it and uploads it to Meta on your WABA's behalf.
+
 ```http
 POST /media/upload
 x-partner-key: wf_xxx
 x-waba-id: 123456789
-Content-Type: multipart/form-data
+Content-Type: application/json
 ```
+```json
+{
+  "url": "https://your-server.com/files/receipt.png",
+  "mime_type": "image/png"
+}
 ```
-file: <binary>
-type: image/jpeg
-```
+
+| Field | Required | Description |
+|-------|----------|-------------|
+| `url` | ✅ | Public **HTTPS** URL of the file. Bridge fetches it server-side (30s timeout). |
+| `mime_type` | ✅ | Full MIME type, e.g. `image/png`, `image/jpeg`, `application/pdf`, `video/mp4`. |
+
 **Response:**
 ```json
-{ "success": true, "mediaId": "1234567890" }
+{ "success": true, "media_id": "1234567890", "waba_id": "123456789" }
 ```
-Use the `mediaId` in subsequent message sends instead of a URL.
+Use the returned **`media_id`** when sending: pass it to `POST /messages/media` as `media.id`.
 
-> **Media IDs** are reusable but may expire — store the URL as backup.
+**Limits:** image 5 MB · audio/video 16 MB · document 100 MB.
+
+> **Media IDs** are bound to the WABA's phone number and **expire after ~30 days** on Meta's side — re-upload if stale.
+
+> ⚠️ Sending `multipart/form-data` to this endpoint returns `400 UNSUPPORTED_CONTENT_TYPE`. (Historical note: docs previously showed a multipart request shape — that was never how this endpoint worked.)
 
 ---
 
