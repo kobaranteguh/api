@@ -1,11 +1,15 @@
 # WasapFlow Bridge — API Reference
 
-**Version:** 2.1.0  
-**Last Updated:** 5 June 2026  
+**Version:** 2.2.0  
+**Last Updated:** 8 August 2026  
 **Base URL:** `https://officialapi.wasapflow.com/bridge/v1`  
 **Auth Header:** `x-partner-key: wf_your_key`
 
-> **What's new in 2.1.0:** Template lifecycle + account webhooks — `template.status_updated` (approved/rejected), `template.quality_updated`, `template.category_updated`, `waba.account_updated`, `waba.review_updated`, and `contact.synced` (Coexistence contact sync). See [Webhook Event Payloads](#webhook-event-payloads).
+> ⚠️ **Meta pricing change — effective 1 October 2026.** Service messages (non-template replies inside the 24-hour customer service window) and utility templates sent inside that window become billable. **How you send does not change** — service messages still need no template and no Meta pre-approval. Only the billing changes. See the [Changelog](?tab=changelog) for what to do now.
+
+> **What's new in 2.2.0:** Every message status webhook now carries a `pricing` object so you can attribute Meta's cost per message, plus a `conversation` object. Every API response carries [notice headers](#change-notices), and every webhook carries a `meta` object pointing at the changelog. All additive — no existing field changed.
+>
+> **2.1.0:** Template lifecycle + account webhooks — `template.status_updated` (approved/rejected), `template.quality_updated`, `template.category_updated`, `waba.account_updated`, `waba.review_updated`, and `contact.synced` (Coexistence contact sync). See [Webhook Event Payloads](#webhook-event-payloads).
 >
 > **2.0.0:** Coexistence message sync — `message.echo` (messages your client sends from the WhatsApp Business App) and `message.history` (past conversations backfilled after onboarding).
 
@@ -149,6 +153,40 @@ return body;
 ```
 
 > **Migration note (May 2026):** Before v1.4.5 the Bridge API returned `200 OK` even for failed responses. From v1.4.5 onwards, failed responses return appropriate 4xx/5xx codes. Your existing code checking `body.success === false` continues to work, but new code can now rely on HTTP status checks as well.
+
+---
+
+## Change Notices
+
+Meta changes its platform on a fixed calendar — rates can move only on 1 January, 1 April, 1 July, or 1 October. When something is coming that affects you, we tell you through **every response**, so you never have to poll a page or monitor Meta's docs yourself.
+
+**Every API response carries these headers:**
+
+| Header | Value |
+|--------|-------|
+| `X-Bridge-Api-Version` | Current Bridge API version, e.g. `2.2.0` |
+| `X-Bridge-Changelog` | URL of the changelog |
+| `X-Bridge-Notice` | Comma-separated notice IDs (header absent when there are none) |
+| `X-Bridge-Notice-Level` | Highest severity: `info`, `action_required`, or `breaking` |
+
+**Every webhook carries the same information** in a `meta` object — see [Webhook Envelope](#webhook-envelope).
+
+```javascript
+const res = await fetch(url, opts);
+
+const level = res.headers.get('X-Bridge-Notice-Level');
+if (level === 'action_required' || level === 'breaking') {
+    logger.warn('Bridge platform notice', {
+        ids:       res.headers.get('X-Bridge-Notice'),
+        level,
+        changelog: res.headers.get('X-Bridge-Changelog')
+    });
+}
+```
+
+Notice IDs are stable forever, so you can suppress ones you have already acted on. Headers are purely additive — response bodies are unchanged, so strict body parsers and schema validators are unaffected.
+
+Full detail for every notice, plus the Meta platform calendar: **[Changelog](?tab=changelog)** (mirrored at [github.com/kobaranteguh/changelog](https://github.com/kobaranteguh/changelog)).
 
 ---
 
@@ -1141,9 +1179,24 @@ Every webhook POST has this top-level structure:
   "waba_id": "123456789",
   "phone_number_id": "987654321",
   "timestamp": 1715695200,
-  "data": { ... }
+  "data": { ... },
+  "meta": {
+    "api_version": "2.2.0",
+    "changelog": "https://partner.wasapflow.com/bridge/docs?tab=changelog",
+    "notices": [
+      {
+        "id": "meta-service-message-billing-2026-10-01",
+        "severity": "action_required",
+        "effective": "2026-10-01"
+      }
+    ]
+  }
 }
 ```
+
+The `meta` object (added in 2.2.0) tells you the current API version and any Meta platform change coming your way. `notices` is an empty array when there is nothing pending. Notice IDs are stable forever, so you can suppress ones you have already handled.
+
+> The `meta` object is inside the signed body. If you verify signatures, no change is needed — the signature is computed over the complete body as sent.
 
 Additional headers sent with every webhook:
 
@@ -1265,10 +1318,43 @@ if (event === 'message.received') {
     "recipient": "60123456789",
     "recipient_bsuid": "MY.2035200694071263",
     "timestamp": 1715695260,
-    "errors": null
+    "errors": null,
+    "pricing": {
+      "billable": false,
+      "pricing_model": "PMP",
+      "type": "free_customer_service",
+      "category": "service"
+    },
+    "conversation": {
+      "id": "b0d4a1f2c3e4",
+      "origin": "service"
+    }
   }
 }
 ```
+
+##### `pricing` and `conversation` (added in 2.2.0)
+
+Meta charges per **delivered** message under per-message pricing (PMP). These two objects pass through exactly what Meta reports, so you can attribute cost per message without a separate analytics call.
+
+| Field | Values | Meaning |
+|---|---|---|
+| `pricing.billable` | `true` / `false` | Whether Meta charges for this message |
+| `pricing.pricing_model` | `PMP` | Per-message pricing |
+| `pricing.type` | `regular`, `free_customer_service`, `free_entry_point` | See below |
+| `pricing.category` | `service`, `utility`, `marketing`, `authentication`, `referral_conversion` | Which rate applies |
+| `conversation.id` | string | Meta's conversation ID |
+| `conversation.origin` | same values as `category` | What opened the conversation |
+
+Both are `null` when Meta does not supply them — commonly on `read` receipts. **Treat them as optional** and never assume they are present.
+
+**Why `pricing.type` matters right now:**
+
+- `regular` — billable today.
+- `free_customer_service` — free today, **becomes billable on 1 October 2026**. This covers both non-template service replies and utility templates sent inside an open customer service window.
+- `free_entry_point` — inside the 72-hour free entry point window. **Stays free.**
+
+To project your 1 October exposure, count messages where `pricing.type === "free_customer_service"` over a full month. That count multiplied by the published rate is your added cost. Meta publishes the rates by 1 September 2026.
 
 ---
 
@@ -1610,6 +1696,139 @@ if (event === 'message.received') {
 
 ---
 
+#### `waba.pricing_tier_updated` — Volume pricing tier reached 🆕
+
+```json
+{
+  "event": "waba.pricing_tier_updated",
+  "waba_id": "123456789",
+  "phone_number_id": "987654321",
+  "timestamp": 1715695200,
+  "data": {
+    "waba_id": "123456789",
+    "pricing_category": "UTILITY",
+    "tier": "25000001:50000000",
+    "region": "Malaysia",
+    "effective_month": "2026-09",
+    "tier_update_time": 1743451903,
+    "raw": { ... }
+  }
+}
+```
+
+> **Not the same as `waba.tier_updated`.** That one is the *messaging* tier — how many unique recipients per 24 hours. This one is about **price**: reaching a new volume tier unlocks a lower rate for utility and authentication messages in that market.
+>
+> **`tier`** — `"<lower>:<upper>"`. Subtract your current volume from `<upper>` to see how many more messages reach the next tier. `<upper>` may be the string `MAX`.
+> **`pricing_category`** — `UTILITY` or `AUTHENTICATION` only. **Service messages have no volume tiers**, so this never fires for them.
+>
+> Meta may send more than one webhook for the same tier change — use the one with the smallest `tier_update_time`.
+
+---
+
+#### `waba.offboarded` / `waba.reconnected` — Coexistence re-registration 🆕
+
+Fired when a Coexistence client re-registers their WhatsApp Business App (new device, reinstall). Meta offboards the number, then reonboards it automatically in the background, usually within a few minutes.
+
+```json
+{
+  "event": "waba.offboarded",
+  "waba_id": "123456789",
+  "phone_number_id": "987654321",
+  "timestamp": 1715695200,
+  "data": {
+    "waba_id": "123456789",
+    "phone_number_id": "987654321",
+    "reason": null,
+    "raw": { ... }
+  }
+}
+```
+
+> Treat `waba.offboarded` as a **soft pause**, not a disconnection. Sending may fail until `waba.reconnected` arrives. No action is required from you — do not delete the client record.
+
+---
+
+#### `standby.*` — Meta Business Agent is handling the conversation 🆕
+
+When a business enables **Meta Business Agent** on a phone number, Meta's AI agent and your app coexist on that number. Only one is the **active handler** at a time. While your app is the passive listener, Meta **stops sending `message.received`** and sends standby events instead.
+
+| Event | Fired when |
+|-------|-----------|
+| `standby.message_received` | A user sent a message while your app is not the active handler |
+| `standby.message_echo` | Meta Business Agent sent a message on the client's behalf |
+| `standby.message_status` | Delivery/read status for a Business Agent message (carries `pricing`) |
+
+```json
+{
+  "event": "standby.message_received",
+  "waba_id": "123456789",
+  "phone_number_id": "987654321",
+  "timestamp": 1715695200,
+  "data": {
+    "standby": true,
+    "active_handler": "meta_business_agent",
+    "message_id": "wamid....",
+    "from": "60123456789",
+    "contact_name": "Aiman",
+    "contact_wa_id": "60123456789",
+    "type": "text",
+    "text": "Ada saiz S tak?",
+    "timestamp": 1715695200,
+    "raw": { ... }
+  }
+}
+```
+
+> ⚠️ **Sending a service message while in standby makes your app the active handler.** Per Meta's documentation this is the intended way to escalate to a human agent — but it also means an automated reply will silently take control away from the agent. **If you run a bot, gate it on `standby !== true`:**
+>
+> ```javascript
+> if (data.standby) return saveContextOnly(data);  // observe, don't reply
+> ```
+
+`standby.message_echo` carries `template` and `flow` — the full unhydrated definitions of what the agent sent, when applicable. `standby.message_status` carries the same `pricing` and `conversation` objects as regular status events, so Business Agent traffic appears in your cost reporting alongside your own.
+
+**Prerequisite:** the business must enable Meta Business Agent and grant standby permission. Until then these events never fire and nothing changes for you.
+
+##### Required: show your client a visible warning
+
+This is the single most confusing failure mode on the platform, and it is not a failure at all.
+
+When Meta Business Agent takes over, your client sees their automation stop replying. Nothing is broken, nothing errors, and **nothing appears in your logs** — because the messages never reach you. Your client will open a support ticket saying "the bot is dead", and without a banner you will have no way to explain it.
+
+**You must surface this in your UI.** Build a persistent warning banner — in the app header and in the inbox for the affected number — that appears when a `standby.*` event arrives and disappears when normal `message.received` events resume.
+
+Use a **warning** style (yellow/amber), not an error style (red). Nothing has failed; your client simply needs to know who is answering and what their options are.
+
+Recommended wording:
+
+> 🤖 **Meta Business Agent is answering your customers — not your AI.** To take back control, turn it off in WhatsApp Manager → Account tools → Business Agent. Manual chat still works normally.
+
+Implementation shape:
+
+```javascript
+// On any standby.* event — raise the banner (idempotent, once per number)
+if (event.startsWith('standby.')) {
+    await alerts.raise({
+        clientId,
+        phoneNumberId: payload.phone_number_id,
+        type: 'meta_agent_active',
+        severity: 'warning'
+    });
+    return saveContextOnly(data);   // observe — never auto-reply
+}
+
+// On a normal inbound message — we are the active handler again, clear it
+if (event === 'message.received') {
+    await alerts.clear({ clientId, type: 'meta_agent_active' });
+}
+```
+
+Standby events can arrive many times a minute, so make the raise idempotent — create the alert once and update it, rather than emitting a notification per event.
+
+WasapFlow's own product implements exactly this pattern; we are asking you to mirror it so your clients get the same clarity.
+
+---
+
 ### Failed Webhook Events (Recovery)
 
 If your endpoint was down or returned errors, failed events are stored and can be retrieved or replayed.
@@ -1874,4 +2093,4 @@ The following Meta features are **not currently supported** through Bridge and a
 
 ---
 
-*WasapFlow Bridge API Reference v2.1.0 — for registered partners only.*
+*WasapFlow Bridge API Reference v2.2.0 — for registered partners only.*
