@@ -1,6 +1,6 @@
 # WasapFlow Bridge — API Reference
 
-**Version:** 2.3.0  
+**Version:** 2.4.0  
 **Last Updated:** 11 August 2026  
 **Base URL:** `https://officialapi.wasapflow.com/bridge/v1`  
 **Auth Header:** `x-partner-key: wf_your_key`
@@ -464,6 +464,27 @@ POST /messages/send
   "preview_url": false
 }
 ```
+
+##### Recipient: `to` or `recipient` (2.4.0)
+
+Every send endpoint takes **either** a phone number **or** a BSUID:
+
+| Field | Value | Use when |
+|-------|-------|----------|
+| `to` | Phone number, e.g. `60123456789` | You have the customer's number — the normal case |
+| `recipient` | BSUID, e.g. `MY.2026206508304015` | Meta sent no phone number for this customer |
+
+```json
+{ "recipient": "MY.2026206508304015", "text": "Terima kasih!" }
+```
+
+**When both are supplied, `to` wins.** That is Meta's own precedence rule. Existing integrations that send `to` are unaffected — `recipient` is only needed once a customer adopts a WhatsApp username and Meta stops sending their number (see [Changelog 2.3.0](?tab=changelog) for why that happens).
+
+Supplying neither returns `MISSING_FIELDS`.
+
+> **Response shape differs.** Sending to a `recipient` returns `contacts[0].user_id` and **no `wa_id`**. If you read `wa_id` from a send response, it will be `undefined` for BSUID sends — read `user_id` instead.
+
+> **Not accepted for authentication templates.** Meta rejects BSUID recipients for one-tap, zero-tap and copy-code authentication templates with error `131062`. This is permanent: OTP flows always need a real phone number.
 
 ---
 
@@ -2139,4 +2160,4 @@ The following Meta features are **not currently supported** through Bridge and a
 
 ---
 
-*WasapFlow Bridge API Reference v2.3.0 — for registered partners only.*
+*WasapFlow Bridge API Reference v2.4.0 — for registered partners only.*
