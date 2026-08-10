@@ -1,7 +1,7 @@
 # WasapFlow Bridge — API Reference
 
-**Version:** 2.2.0  
-**Last Updated:** 8 August 2026  
+**Version:** 2.3.0  
+**Last Updated:** 11 August 2026  
 **Base URL:** `https://officialapi.wasapflow.com/bridge/v1`  
 **Auth Header:** `x-partner-key: wf_your_key`
 
@@ -1250,6 +1250,52 @@ if (/^[A-Z]{2}\.\d+$/.test(payload.data.from)) { ... }
 
 **Recommendation:** Persist BOTH `from` (phone) AND `bsuid` against each contact. Use `bsuid` as your stable customer key — phone may change/disappear when the user adopts a WhatsApp username; BSUID won't. The same BSUID also appears as `recipient_bsuid` on `message.sent/delivered/read/failed/echo`, and as `contact_bsuid` on `message.history`.
 
+##### ⚠️ Required: never let a BSUID become a phone number (added 2.3.0)
+
+Meta states that supporting BSUID is **required** for all partners. The part that catches most integrations is not parsing it — it is what happens downstream.
+
+Once a customer adopts a username, Meta may omit the phone number from the webhook entirely: `wa_id`, `from` and `recipient_id` are *"omitted entirely"* when the user has a username and there has been no interaction in the last 30 days. You get a BSUID and nothing else.
+
+A BSUID sends WhatsApp messages fine. **A courier cannot call it.**
+
+**Check your phone normaliser today.** Nearly every integration has one shaped like this:
+
+```javascript
+let n = phone.replace(/\D/g, '');
+if (n.startsWith('0')) n = '6' + n;
+if (!n.startsWith('60')) n = '60' + n;
+```
+
+Give it `MY.2035200694071263` and it returns **`602035200694071263`** — a value that looks like a Malaysian number, passes naive validation, and reaches your courier. No exception, no log line. If your normaliser strips non-digits before validating, you have this bug right now.
+
+Guard it explicitly, and return null rather than trying to clean the value:
+
+```javascript
+// 2-letter country code, dot, alphanumerics.
+// Parent BSUIDs insert ENT: US.ENT.11815799212886844830
+const BSUID = /^(?:whatsapp:)?[A-Z]{2}\.(?:ENT\.)?[A-Za-z0-9]{1,128}$/;
+
+function toPhone(value) {
+    if (!value) return null;
+    if (BSUID.test(String(value).trim())) return null;  // never normalise a BSUID
+    if (/[A-Za-z]/.test(value)) return null;            // letters mean it is not a phone
+    // ...your existing normalisation...
+}
+```
+
+**Split the field.** Most schemas keep one `phone` on the contact and use it for everything. It now has to be two:
+
+| Role | Contents | Used for |
+|---|---|---|
+| Canonical id | Phone **or** BSUID | Sending WhatsApp, matching a contact back |
+| Reachable phone | Always a real phone, may be empty | Courier, invoices, voice calls |
+
+**Ask for the phone in your order flow.** If your flow collects name, address and postcode but never a phone — because the WhatsApp number was always assumed to be the phone — it now produces orders that cannot be delivered. When you already hold a plausible number, ask the customer to *confirm* it rather than retype it; that keeps the friction to a one-word answer. This is worth doing before usernames even arrive, since customers regularly order from a work WhatsApp or on behalf of someone else.
+
+**Pushing to WooCommerce or an ERP:** send the real phone as `billing.phone`, and keep the canonical id in a separate meta field for matching webhooks back. Leave `billing.phone` **empty** rather than filling it with an id — an empty field makes a human ask; a fake number sends a courier to a dead end.
+
+Full guidance, including what Meta requires that Bridge does not yet expose: [Changelog 2.3.0](?tab=changelog).
+
 **Handling different message types:**
 ```javascript
 const { event, data } = JSON.parse(req.body);
@@ -2093,4 +2139,4 @@ The following Meta features are **not currently supported** through Bridge and a
 
 ---
 
-*WasapFlow Bridge API Reference v2.2.0 — for registered partners only.*
+*WasapFlow Bridge API Reference v2.3.0 — for registered partners only.*
