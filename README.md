@@ -1,6 +1,6 @@
 # WasapFlow Bridge — API Reference
 
-**Version:** 2.4.0  
+**Version:** 2.5.0  
 **Last Updated:** 11 August 2026  
 **Base URL:** `https://officialapi.wasapflow.com/bridge/v1`  
 **Auth Header:** `x-partner-key: wf_your_key`
@@ -446,10 +446,25 @@ x-waba-id: 123456789
 
 > **Phone number format:** Always use international format without `+`. Example: `60123456789` (not `+60123456789`).
 
-All successful message sends return:
+All successful message sends return the Meta **wamid**, under two keys holding
+the same value — read whichever you prefer:
+
 ```json
-{ "success": true, "message_id": "wamid.HBgNNjAxMjM0NTY3ODkVAgASGBQzQUVEMUFBQkVBRUQ5NTJERTA" }
+{
+  "success": true,
+  "message_id": "wamid.HBgNNjAxMjM0NTY3ODkVAgASGBQzQUVEMUFBQkVBRUQ5NTJERTA",
+  "messages": [ { "id": "wamid.HBgNNjAxMjM0NTY3ODkVAgASGBQzQUVEMUFBQkVBRUQ5NTJERTA" } ]
+}
 ```
+
+`message_id` has been there since 1.0. `messages[0].id` was added in 2.5.0
+because it is the shape Meta's own Cloud API returns, and partners arriving
+from Meta's documentation look for it there first.
+
+**Store this id.** Every delivery callback (`message.sent`, `message.delivered`,
+`message.read`, `message.failed`) is keyed on it. Without it you cannot tell
+which message a status belongs to, and a `message.failed` — the only way you
+learn a send did not arrive — has nothing to attach to.
 
 ---
 
@@ -465,24 +480,31 @@ POST /messages/send
 }
 ```
 
-##### Recipient: `to` or `recipient` (2.4.0)
+##### Recipient: `to`, `user_id` or `recipient` (2.5.0)
 
 Every send endpoint takes **either** a phone number **or** a BSUID:
 
 | Field | Value | Use when |
 |-------|-------|----------|
-| `to` | Phone number, e.g. `60123456789` | You have the customer's number — the normal case |
-| `recipient` | BSUID, e.g. `MY.2026206508304015` | Meta sent no phone number for this customer |
+| `to` | Phone number **or** BSUID | The normal case. A BSUID here is detected and routed correctly — you do not have to branch |
+| `user_id` | BSUID, e.g. `MY.2026206508304015` | You want an explicit field rather than relying on us detecting the shape |
+| `recipient` | BSUID | Alias of `user_id`, kept from 2.4.0 |
+
+All three of these deliver to the same person:
 
 ```json
+{ "to": "MY.2026206508304015", "text": "Terima kasih!" }
+{ "user_id": "MY.2026206508304015", "text": "Terima kasih!" }
 { "recipient": "MY.2026206508304015", "text": "Terima kasih!" }
 ```
 
-**When both are supplied, `to` wins.** That is Meta's own precedence rule. Existing integrations that send `to` are unaffected — `recipient` is only needed once a customer adopts a WhatsApp username and Meta stops sending their number (see [Changelog 2.3.0](?tab=changelog) for why that happens).
+**When a phone number and a BSUID are both supplied, the phone number wins.** That is Meta's own precedence rule. Existing integrations that send a phone number in `to` are unaffected, byte for byte.
 
 Supplying neither returns `MISSING_FIELDS`.
 
-> **Response shape differs.** Sending to a `recipient` returns `contacts[0].user_id` and **no `wa_id`**. If you read `wa_id` from a send response, it will be `undefined` for BSUID sends — read `user_id` instead.
+> **Fixed in 2.5.0 — if you are on 2.4.0, this affects you.** In 2.4.0 a BSUID placed in `to` was forwarded to Meta's *phone number* field. Meta stripped it to digits, so `MY.1777397056778201` became `1777397056778201` — a number belonging to nobody — and the send failed with `131026 Message undeliverable` **after** we had already returned `2xx`. Only `recipient` worked. From 2.5.0 all three field names work, and a BSUID is never treated as a phone number. Click-to-WhatsApp ad leads are the common case here: those users often have no phone number at all.
+
+> **Response shape differs.** Sending to a BSUID returns `contacts[0].user_id` and **no `wa_id`**. If you read `wa_id` from a send response, it will be `undefined` for BSUID sends — read `user_id` instead.
 
 > **Not accepted for authentication templates.** Meta rejects BSUID recipients for one-tap, zero-tap and copy-code authentication templates with error `131062`. This is permanent: OTP flows always need a real phone number.
 
@@ -2160,4 +2182,4 @@ The following Meta features are **not currently supported** through Bridge and a
 
 ---
 
-*WasapFlow Bridge API Reference v2.4.0 — for registered partners only.*
+*WasapFlow Bridge API Reference v2.5.0 — for registered partners only.*
