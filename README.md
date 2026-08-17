@@ -1,6 +1,6 @@
 # WasapFlow Bridge — API Reference
 
-**Version:** 2.5.0  
+**Version:** 2.6.0  
 **Last Updated:** 11 August 2026  
 **Base URL:** `https://officialapi.wasapflow.com/bridge/v1`  
 **Auth Header:** `x-partner-key: wf_your_key`
@@ -276,6 +276,70 @@ For Coexistence onboarding, include `"connection_mode": "coexistence"`. This tel
 | `CODE_EXCHANGE_FAILED` | Code expired or invalid — client needs to redo Embedded Signup |
 | `DISCOVERY_FAILED` | Could not find WABA/Phone from the signup — client may not have completed the flow |
 | `WABA_LIMIT_REACHED` | Partner exceeded max WABAs on their plan |
+
+---
+
+#### Create a Connect Session (2.6.0)
+```http
+POST /connect/session
+x-partner-key: wf_xxx
+Content-Type: application/json
+
+{
+  "display_name": "USRAA Skin Centre",
+  "state": "your-own-client-id-123"
+}
+```
+
+Server-to-server. Exchanges your partner key for a **short-lived link** you can
+safely open in your client's browser.
+
+**Response:**
+```json
+{
+  "success": true,
+  "connect_url": "https://officialapi.wasapflow.com/bridge/connect?token=93d29ead…",
+  "token": "93d29ead…",
+  "expires_in": 1800
+}
+```
+
+Send your client to `connect_url`. Nothing else is needed — the page handles the
+Meta popup, the Coexistence extras and the code exchange.
+
+| Field | Notes |
+|---|---|
+| `display_name` | Optional. Your client's business name, shown during onboarding |
+| `state` | Optional, max 255 chars. Opaque to us. Returned to you unchanged when the connection completes, so you can match it to your own client record |
+| `expires_in` | Seconds. 30 minutes. The link may be reloaded within that window |
+
+**Why this exists — please migrate.** The older form,
+`/bridge/connect?partner_key=wf_live_…`, puts your **full API credential** in a
+browser URL. From there it reaches the address bar, browser history, the
+`Referer` header sent to other hosts, and our own access logs in plain text.
+Anyone who reads any one of those gets complete control of your partner account —
+every WABA, every send, every client.
+
+The old form still works and we have not set a removal date, so nothing breaks
+today. But a `partner_key` that has been through a browser should be treated as
+exposed: rotate it in the partner portal after you migrate.
+
+**Getting `state` back:**
+
+```js
+window.addEventListener('message', (e) => {
+  if (e.data?.type === 'WASAPFLOW_CONNECT_SUCCESS') {
+    e.data.state;    // "your-own-client-id-123"
+    e.data.waba_id;
+  }
+});
+```
+
+It is also in the `/clients/register-from-code` response body as `state`.
+
+> Before 2.6.0 the connect page accepted a `state` query parameter and silently
+> discarded it. If you were passing one and wondering why it never came back,
+> that is why.
 
 ---
 
@@ -2182,4 +2246,4 @@ The following Meta features are **not currently supported** through Bridge and a
 
 ---
 
-*WasapFlow Bridge API Reference v2.5.0 — for registered partners only.*
+*WasapFlow Bridge API Reference v2.6.0 — for registered partners only.*
