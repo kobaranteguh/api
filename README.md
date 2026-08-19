@@ -1,6 +1,6 @@
 # WasapFlow Bridge — API Reference
 
-**Version:** 2.6.0  
+**Version:** 2.6.1  
 **Last Updated:** 11 August 2026  
 **Base URL:** `https://officialapi.wasapflow.com/bridge/v1`  
 **Auth Header:** `x-partner-key: wf_your_key`
@@ -322,24 +322,66 @@ every WABA, every send, every client.
 
 The old form still works and we have not set a removal date, so nothing breaks
 today. But a `partner_key` that has been through a browser should be treated as
-exposed: rotate it in the partner portal after you migrate.
+exposed. **Rotation is not self-serve** — ask us and we will rotate it and send
+you the new key. (An earlier version of this page said to rotate it in the
+partner portal. There is no such control; that was our mistake.)
 
-**Getting `state` back:**
+Rotating revokes any connect session that has not been completed yet, so migrate
+and deploy first, then ask for the rotation. It does **not** touch WABAs that are
+already connected: each one holds its own Meta token, so messaging is unaffected.
+
+##### What the popup posts back (2.6.0)
+
+The popup posts to `window.opener` on **every** outcome, and `state` is on all
+three:
+
+| `type` | When | Extra fields |
+|---|---|---|
+| `WASAPFLOW_CONNECT_SUCCESS` | Account registered | `waba_id`, `phone_number_id`, `display_name`, `quality_rating`, `connection_mode` |
+| `WASAPFLOW_CONNECT_CANCEL` | User dismissed Meta's dialog | `reason` |
+| `WASAPFLOW_CONNECT_ERROR` | Registration was rejected | `message`, `code` |
 
 ```js
 window.addEventListener('message', (e) => {
-  if (e.data?.type === 'WASAPFLOW_CONNECT_SUCCESS') {
-    e.data.state;    // "your-own-client-id-123"
-    e.data.waba_id;
+  if (e.origin !== 'https://officialapi.wasapflow.com') return;
+  // Ignore results meant for a different client of yours — a popup left open
+  // for one must never report against another.
+  if (e.data?.state && e.data.state !== myClientId) return;
+
+  switch (e.data?.type) {
+    case 'WASAPFLOW_CONNECT_SUCCESS': /* e.data.waba_id */ break;
+    case 'WASAPFLOW_CONNECT_CANCEL':  /* let them retry  */ break;
+    case 'WASAPFLOW_CONNECT_ERROR':   /* show e.data.message */ break;
   }
 });
 ```
 
-It is also in the `/clients/register-from-code` response body as `state`.
+`state` is also in the `/clients/register-from-code` response body.
 
-> Before 2.6.0 the connect page accepted a `state` query parameter and silently
-> discarded it. If you were passing one and wondering why it never came back,
-> that is why.
+> **Fixed in 2.6.0.** Before this, only `WASAPFLOW_CONNECT_SUCCESS` was ever
+> posted. A cancelled or failed onboarding showed a message inside the popup and
+> told the opener nothing at all — so an integration waiting on an event sat in a
+> "connecting…" state until the user closed the window by hand. If you wrote
+> cancel or error handlers against earlier versions, they never fired. They will
+> now.
+
+> Before 2.6.0 the connect page also accepted a `state` query parameter and
+> silently discarded it. If you were passing one and wondering why it never came
+> back, that is why.
+
+##### Expiry
+
+`expires_in` is 1800 seconds, and that clock governs **opening** the link: after
+it, the page answers `410` and you must mint a new one.
+
+Finishing is more forgiving. An onboarding that opened in time may complete up to
+**30 minutes past** expiry, because Meta's own flow — portfolio selection, number
+verification, waiting for a code — can easily outlast the window, and throwing
+that work away at the last step helps nobody. The `code` Meta hands back is
+itself short-lived and single-use.
+
+Past that, `/clients/register-from-code` answers `401` and the customer has to
+start again.
 
 ---
 
@@ -2246,4 +2288,4 @@ The following Meta features are **not currently supported** through Bridge and a
 
 ---
 
-*WasapFlow Bridge API Reference v2.6.0 — for registered partners only.*
+*WasapFlow Bridge API Reference v2.6.1 — for registered partners only.*
