@@ -1,6 +1,6 @@
 # WasapFlow Bridge — API Reference
 
-**Version:** 2.6.1  
+**Version:** 2.7.0  
 **Last Updated:** 11 August 2026  
 **Base URL:** `https://officialapi.wasapflow.com/bridge/v1`  
 **Auth Header:** `x-partner-key: wf_your_key`
@@ -788,6 +788,43 @@ POST /messages/interactive
 
 ---
 
+#### Catalog and Product Messages
+
+If your client has a WhatsApp Business catalogue connected, you can send product
+messages through the same `/messages/interactive` endpoint. **We pass the
+`interactive` object to Meta unchanged**, so every interactive type Meta supports
+works here — we neither add nor filter anything.
+
+`catalog_id` and `product_retailer_id` must come from you. We do not store client
+catalogues, do not inject ids, and do not validate them; a wrong id comes back as
+Meta's own error, unaltered.
+
+**Single product:**
+```json
+{
+  "to": "60123456789",
+  "interactive": {
+    "type": "product",
+    "body": { "text": "The one you asked about" },
+    "action": {
+      "catalog_id": "230574128435254",
+      "product_retailer_id": "SKU-001"
+    }
+  }
+}
+```
+
+**Multiple products (`product_list`)** — sections of `product_retailer_id`s, and
+**catalogue (`catalog_message`)** — opens the client's full catalogue: both follow
+Meta's own request shape. Send it exactly as Meta documents it.
+
+> **We do not manage catalogues.** There is no `/catalog` or `/products`
+> endpoint. Bridge sends messages that *reference* a catalogue and relays the
+> orders that come back from it. To read products, stock or prices, use Meta's
+> Catalog API directly with the client's token.
+
+---
+
 #### Send Location
 ```http
 POST /messages/location
@@ -1050,6 +1087,24 @@ Returns the media file as binary stream. Use the `media_id` from the `message.re
 ---
 
 ### Media
+
+> **Two media paths, and they behave in opposite ways.** The names look alike,
+> so it is worth reading once:
+>
+> | | What happens |
+> |---|---|
+> | `POST /messages/media` with `media.link` | **Passthrough.** The URL goes to Meta untouched and **Meta** fetches it. Every size, format and host rule is Meta's. |
+> | `POST /media/upload` | **We fetch it.** Bridge downloads the file and uploads it to Meta, returning a `media_id` you can reuse. |
+>
+> Use `/media/upload` for anything sent repeatedly — a catalogue photo, a logo —
+> so the file is not re-fetched on every send.
+>
+> **Rate limits (2.7.0):** both media endpoints now count against your account's
+> `rate_limit_per_sec` like every other endpoint. This closed a gap rather than
+> tightening anything: they previously bypassed the limiter entirely. The limit
+> is the same one already applied elsewhere (200/s by default) and normal use
+> will not reach it. Downloads are also logged now — they were invisible before,
+> so we could not see the traffic at all.
 
 #### Upload Media (Get a media_id)
 
@@ -1384,6 +1439,34 @@ Additional headers sent with every webhook:
 > **`bsuid`** — 🆔 Business-Scoped User ID (added by Meta April 2026). A **separate field** from `from` — always sent alongside, not as a replacement. Format observed: `CC.<numeric_id>` (e.g. `MY.2035200694071263`, `SG.1234567890123`). Unique per business-user pair — same user gets a different BSUID across different businesses. May be `null` for legacy webhooks or users not yet on a BSUID-aware client. Bridge does **not** validate the format — passed through verbatim from Meta `contacts[0].user_id`.
 > **`type`** — Message type: `text`, `image`, `document`, `audio`, `video`, `location`, `button`, `interactive`, `sticker`, `reaction`, `unknown`
 > **`text`** — Populated for text messages only. For media messages, use `data.raw.message` to get the full media object including `id` for downloading.
+
+##### `raw.message` carries everything Meta sent
+
+The flat fields above are a convenience layer. **`data.raw` holds Meta's own
+objects, unmodified** — we never strip anything out of it:
+
+```json
+"raw": {
+  "message":  { … },   // Meta's message object, exactly as received
+  "contacts": [ … ],
+  "metadata": { … }
+}
+```
+
+So anything Meta emits reaches you, including message types that have no flat
+field of their own:
+
+| What you need | Where it is |
+|---|---|
+| Cart / order — `catalog_id`, `product_items[]` (`product_retailer_id`, `quantity`, `item_price`) | `raw.message.order` |
+| Product enquiry — `interactive` carrying `catalog_id` + `product_retailer_id` | `raw.message.interactive` |
+| Reply context — the message id the customer replied to | `raw.message.context` |
+| Media object — `id`, `mime_type`, `sha256` | `raw.message.<type>` |
+| Button / list reply ids | `raw.message.interactive` or `raw.message.button` |
+
+> **Trap:** for `order` and `interactive` messages the flat **`text` is `null`**.
+> Switch on the flat `type`, then read `raw.message`. Code that only reads `text`
+> will treat a cart as an empty message.
 
 **🆔 BSUID & WhatsApp Usernames (June 2026+) — detection guidance:**
 
@@ -2288,4 +2371,4 @@ The following Meta features are **not currently supported** through Bridge and a
 
 ---
 
-*WasapFlow Bridge API Reference v2.6.1 — for registered partners only.*
+*WasapFlow Bridge API Reference v2.7.0 — for registered partners only.*
