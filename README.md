@@ -1,6 +1,6 @@
 # WasapFlow Bridge — API Reference
 
-**Version:** 2.7.0  
+**Version:** 2.8.0  
 **Last Updated:** 11 August 2026  
 **Base URL:** `https://officialapi.wasapflow.com/bridge/v1`  
 **Auth Header:** `x-partner-key: wf_your_key`
@@ -382,6 +382,73 @@ itself short-lived and single-use.
 
 Past that, `/clients/register-from-code` answers `401` and the customer has to
 start again.
+
+---
+
+#### Onboarding Session Events (2.8.0)
+```http
+GET /onboarding/events?limit=50
+x-partner-key: wf_xxx
+```
+
+What actually happened inside Meta's dialog during your customers' onboarding
+attempts — including the ones that failed.
+
+```json
+{
+  "success": true,
+  "count": 2,
+  "events": [
+    {
+      "state": "your-client-id-123",
+      "current_step": "PHONE_NUMBER_VERIFICATION",
+      "error_code": "2655122",
+      "error_message": "This phone number is already registered to a WhatsApp account…",
+      "meta_session_id": "01a01c9b-fff7-7d34-abb7-2747f9de7b9f",
+      "waba_id": null,
+      "phone_number_id": null,
+      "created_at": "2026-08-20T09:00:15.106Z"
+    }
+  ]
+}
+```
+
+**`meta_session_id` is the one to keep.** It is Meta's own trace id, and it is
+the first thing Direct Support asks for. Quote it when you escalate to us.
+
+Onboarding runs in your customer's browser against Meta — our server only sees
+the very end of it. Before 2.8.0 a failure inside that dialog left no record
+anywhere, so neither of us could say what went wrong. This is that record.
+
+The same information also reaches your window live, on
+`WASAPFLOW_CONNECT_ERROR` (`meta_session_id`, `current_step`) and
+`WASAPFLOW_CONNECT_CANCEL` (`current_step`).
+
+---
+
+#### Coexistence sync (2.8.0)
+
+When you onboard in `coexistence` mode, we now ask Meta to send the customer's
+contacts and chat history. The result is on the registration response:
+
+```json
+{
+  "success": true,
+  "client": { … },
+  "coexistence_sync": {
+    "smb_app_state_sync": "requested",
+    "history": "requested"
+  }
+}
+```
+
+> **Check this field.** Meta gives **24 hours** from onboarding to trigger the
+> sync — *"otherwise they must be offboarded and they must complete the flow
+> again."* If either value starts with `failed:`, tell us the same day. After
+> the window closes, the only fix is redoing the whole onboarding.
+
+Contacts then arrive as `contact.synced` and past conversations as
+`message.history` on your webhook.
 
 ---
 
@@ -2371,4 +2438,4 @@ The following Meta features are **not currently supported** through Bridge and a
 
 ---
 
-*WasapFlow Bridge API Reference v2.7.0 — for registered partners only.*
+*WasapFlow Bridge API Reference v2.8.0 — for registered partners only.*
