@@ -442,10 +442,10 @@ contacts and chat history. The result is on the registration response:
 }
 ```
 
-> **Check this field.** Meta gives **24 hours** from onboarding to trigger the
-> sync — *"otherwise they must be offboarded and they must complete the flow
-> again."* If either value starts with `failed:`, tell us the same day. After
-> the window closes, the only fix is redoing the whole onboarding.
+> **Check this field.** Meta documents a **24 hour** window from onboarding to
+> trigger the sync — *"otherwise they must be offboarded and they must complete
+> the flow again."* If either value starts with `failed:`, tell us the same day
+> while the window is still open.
 
 Contacts then arrive as `contact.synced` and past conversations as
 `message.history` on your webhook.
