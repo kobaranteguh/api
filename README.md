@@ -1,12 +1,14 @@
 # WasapFlow Bridge — API Reference
 
-**Version:** 2.8.0  
-**Last Updated:** 11 August 2026  
+**Version:** 2.9.0  
+**Last Updated:** 21 August 2026  
 **Base URL:** `https://officialapi.wasapflow.com/bridge/v1`  
 **Auth Header:** `x-partner-key: wf_your_key`
 
 > ⚠️ **Meta pricing change — effective 1 October 2026.** Service messages (non-template replies inside the 24-hour customer service window) and utility templates sent inside that window become billable. **How you send does not change** — service messages still need no template and no Meta pre-approval. Only the billing changes. See the [Changelog](?tab=changelog) for what to do now.
 
+> **What's new in 2.9.0:** **32 new endpoints.** Bridge previously exposed 13 of Meta's ~38 Cloud API surfaces — the rest were never missing, just never asked for, which meant emailing us and having us run the call for you. Now open: [QR codes & short links](#qr-codes--short-links), [conversational automation](#conversational-automation) (ice breakers, commands, welcome message), [blocking](#blocked-users), [commerce settings](#commerce-settings), [call & storage settings](#settings-calling--storage), [phone number status](#phone-number-status), [WABA details, audit log, assigned users](#whatsapp-business-account), [schedules](#schedules), [Flows (read-only)](#flows-read-only), [phone number lifecycle](#phone-number-lifecycle), [calling](#calling) and [groups](#groups). Meta errors now carry `meta_code`, `meta_subcode` and `details` instead of just message text. Irreversible actions need `{"confirm": true}`.
+>
 > **What's new in 2.2.0:** Every message status webhook now carries a `pricing` object so you can attribute Meta's cost per message, plus a `conversation` object. Every API response carries [notice headers](#change-notices), and every webhook carries a `meta` object pointing at the changelog. All additive — no existing field changed.
 >
 > **2.1.0:** Template lifecycle + account webhooks — `template.status_updated` (approved/rejected), `template.quality_updated`, `template.category_updated`, `waba.account_updated`, `waba.review_updated`, and `contact.synced` (Coexistence contact sync). See [Webhook Event Payloads](#webhook-event-payloads).
@@ -1378,6 +1380,538 @@ x-waba-id: 123456789
 
 ---
 
+### QR Codes & Short Links
+
+A QR code carries a **pre-filled message**. A customer scans it and their WhatsApp opens on a new chat with that text already typed — they only have to hit send.
+
+Updating the message does **not** change the image or the link. Posters, name cards and shopfront stickers you have already printed keep working. That is why creating and updating are separate calls here.
+
+#### List QR codes
+```http
+GET /qr-codes
+x-partner-key: wf_xxx
+x-waba-id: 123456789
+```
+```json
+{
+  "success": true,
+  "qr_codes": [
+    {
+      "code": "3JJPQ7BQO4RJB1",
+      "prefilled_message": "Hi, I want to order",
+      "deep_link_url": "https://wa.me/message/3JJPQ7BQO4RJB1",
+      "qr_image_url": "https://scontent.xx.fbcdn.net/..."
+    }
+  ]
+}
+```
+
+---
+
+#### Create a QR code
+```http
+POST /qr-codes
+x-partner-key: wf_xxx
+x-waba-id: 123456789
+```
+```json
+{
+  "prefilled_message": "Hi, I want to order",
+  "image_format": "PNG"
+}
+```
+
+| Field | Required | Notes |
+|-------|----------|-------|
+| `prefilled_message` | Yes | The text that appears already typed in the customer's chat |
+| `image_format` | No | `PNG` (default) or `SVG` |
+
+The response contains `code`, `deep_link_url` and `qr_image_url`. **Save the `code`** — it is the only way to update or delete this QR code later.
+
+> `qr_image_url` is a Meta CDN link and it expires. Download the image and host it yourself if you are printing it.
+
+---
+
+#### Update the message behind a QR code
+```http
+PUT /qr-codes/3JJPQ7BQO4RJB1
+x-partner-key: wf_xxx
+x-waba-id: 123456789
+```
+```json
+{ "prefilled_message": "Hi, I want the Raya promo" }
+```
+
+The image and the short link stay exactly the same.
+
+---
+
+#### Delete a QR code
+```http
+DELETE /qr-codes/3JJPQ7BQO4RJB1
+x-partner-key: wf_xxx
+x-waba-id: 123456789
+```
+
+---
+
+### Conversational Automation
+
+Ice breakers and commands are the tappable shortcuts a customer sees in the chat. Until now these could only be set by hand in WhatsApp Manager, one number at a time.
+
+- **Ice breakers** (`prompts`) — up to 4 tappable questions shown on the **first** chat only. Good for "Check my order", "Opening hours".
+- **Commands** — a `/` menu available at any time in the thread.
+- **Welcome message** — turn this on to receive a `messages` webhook when a customer opens the chat for the first time, so you can greet them.
+
+#### Read current settings
+```http
+GET /conversational-automation
+x-partner-key: wf_xxx
+x-waba-id: 123456789
+```
+```json
+{
+  "success": true,
+  "enable_welcome_message": true,
+  "commands": [
+    { "command_name": "tickets", "command_description": "Book flight tickets" }
+  ],
+  "prompts": ["Book a flight", "Plan a trip"]
+}
+```
+
+---
+
+#### Update settings
+```http
+POST /conversational-automation
+x-partner-key: wf_xxx
+x-waba-id: 123456789
+```
+```json
+{
+  "enable_welcome_message": true,
+  "prompts": ["Book a flight", "Plan a trip"],
+  "commands": [
+    { "command_name": "tickets", "command_description": "Book flight tickets" }
+  ]
+}
+```
+
+Send only the keys you want to change. Omitted keys are left untouched.
+
+> An ice breaker is dismissed automatically if the customer arrives through a `wa.me` link that already carries pre-filled text — including one of your own QR codes. The two features do not stack.
+
+---
+
+### Blocked Users
+
+Block spam and abuse without touching your own send logic. A blocked user's messages stop reaching your webhook, and your attempts to message them return an error.
+
+**Meta's limits — these are the ones partners hit:**
+
+- You can only block someone who has **messaged you in the last 24 hours**.
+- Maximum **1,000 users per request**.
+- The blocklist caps at **64,000 users**.
+- You cannot block another WhatsApp Business account.
+
+#### List blocked users
+```http
+GET /blocked?limit=50
+x-partner-key: wf_xxx
+x-waba-id: 123456789
+```
+
+Supports `limit`, `after` and `before` for cursor pagination; the cursors come back in `paging.cursors`.
+
+---
+
+#### Block users
+```http
+POST /blocked
+x-partner-key: wf_xxx
+x-waba-id: 123456789
+```
+```json
+{ "users": ["+60123456789", "+60198887777"] }
+```
+```json
+{
+  "success": true,
+  "blocked": [{ "input": "+60123456789", "wa_id": "60123456789" }],
+  "failed": [
+    {
+      "input": "+60198887777",
+      "wa_id": "60198887777",
+      "errors": [{ "code": 131047, "message": "Re-engagement required",
+                   "error_data": { "details": "User has not messaged in the last 24 hours" } }]
+    }
+  ]
+}
+```
+
+> ⚠️ **`success: true` does not mean every number was blocked.** Meta reports failures per number. Always read the `failed` array — a partially successful request still returns 200.
+
+---
+
+#### Unblock users
+```http
+DELETE /blocked
+x-partner-key: wf_xxx
+x-waba-id: 123456789
+```
+```json
+{ "users": ["+60123456789"] }
+```
+
+Returns `unblocked` and `failed` in the same shape.
+
+---
+
+### Commerce Settings
+
+Controls whether your catalog and cart are visible to customers on this number.
+
+#### Read
+```http
+GET /commerce-settings
+x-partner-key: wf_xxx
+x-waba-id: 123456789
+```
+
+#### Update
+```http
+POST /commerce-settings
+x-partner-key: wf_xxx
+x-waba-id: 123456789
+```
+```json
+{ "is_catalog_visible": true, "is_cart_enabled": false }
+```
+
+Send either key or both. Useful when you sell through a catalog but take payment on your own site — show the catalog, hide the cart.
+
+---
+
+### Settings (calling & storage)
+
+The `settings` node holds two unrelated things: **call settings** and **No-Storage mode**. Bridge returns the whole node rather than a hand-picked list of fields, because Meta adds keys here without notice and a whitelist would hide new ones from you.
+
+#### Read
+```http
+GET /settings
+x-partner-key: wf_xxx
+x-waba-id: 123456789
+```
+```json
+{
+  "success": true,
+  "settings": {
+    "calling": { "status": "DISABLED", "call_icon_visibility": "DEFAULT" },
+    "storage_configuration": { "status": "disabled" }
+  }
+}
+```
+
+#### Update
+```http
+POST /settings
+x-partner-key: wf_xxx
+x-waba-id: 123456789
+```
+```json
+{
+  "calling": {
+    "status": "ENABLED",
+    "call_icon_visibility": "DEFAULT",
+    "callback_permission_status": "ENABLED"
+  }
+}
+```
+
+Calling must be `ENABLED` here before any `/calls` request will work.
+
+---
+
+### Phone Number Status
+
+Answers the three questions partners used to email us about: is this number an Official Business Account, is two-step verification on, and has the display name passed review.
+
+```http
+GET /phone-status
+x-partner-key: wf_xxx
+x-waba-id: 123456789
+```
+```json
+{
+  "success": true,
+  "phone": {
+    "display_phone_number": "+60 12-345 6789",
+    "verified_name": "My Business",
+    "status": "CONNECTED",
+    "quality_rating": "GREEN",
+    "messaging_limit_tier": "TIER_1K",
+    "is_official_business_account": false,
+    "is_pin_enabled": true,
+    "name_status": "APPROVED",
+    "code_verification_status": "VERIFIED",
+    "platform_type": "CLOUD_API",
+    "is_on_biz_app": true
+  }
+}
+```
+
+> `platform_type` reads `CLOUD_API` for Coexistence numbers too. **`is_on_biz_app` is what tells you it is Coexistence** — not `platform_type`.
+
+---
+
+### WhatsApp Business Account
+
+#### Account details
+```http
+GET /waba
+x-partner-key: wf_xxx
+x-waba-id: 123456789
+```
+
+Returns `name`, `currency`, `timezone_id`, `account_review_status`, `business_verification_status`, `owner_business_info`, `message_template_namespace`, `health_status`, `ownership_type` and `is_enabled_for_insights`.
+
+`health_status` is the useful one when sends start failing — it reports `can_send_message` and names the entity that is blocking.
+
+> `primary_funding_id` is deliberately absent. It needs a billing permission the onboarding token never holds, and Meta rejects the **entire** request with code 10 when one requested field is not permitted — one unreachable field would wipe out the other eleven.
+
+---
+
+#### Activity log (audit trail)
+```http
+GET /waba/activities?limit=50&since=1750000000&until=1755000000
+x-partner-key: wf_xxx
+x-waba-id: 123456789
+```
+
+Who changed what on this WABA and when. This is what to reach for when a client asks why a template disappeared or why their messaging limit changed. `limit` is capped at 200.
+
+---
+
+#### Assigned users
+```http
+GET /waba/assigned-users
+x-partner-key: wf_xxx
+x-waba-id: 123456789
+```
+
+Which Business Manager users have access to this WABA, and their tasks. Meta requires a business id for this call — Bridge fills in the one recorded at registration, so you do not need to know it. Override with `?business_id=` if you need a different one.
+
+---
+
+#### Solutions
+```http
+GET /waba/solutions
+x-partner-key: wf_xxx
+x-waba-id: 123456789
+```
+
+---
+
+### Schedules
+```http
+GET /schedules
+x-partner-key: wf_xxx
+x-waba-id: 123456789
+```
+
+Scheduled changes queued against this WABA — for example a pending messaging-limit change.
+
+---
+
+### Flows (read-only)
+
+List and inspect the WhatsApp Flows on this WABA.
+
+```http
+GET /flows
+x-partner-key: wf_xxx
+x-waba-id: 123456789
+```
+```http
+GET /flows/1234567890
+x-partner-key: wf_xxx
+x-waba-id: 123456789
+```
+
+Returns `id`, `name`, `status`, `categories`, `validation_errors`, `json_version` and `health_status`.
+
+> **Read-only on purpose.** Creating a Flow needs an endpoint you host plus an encryption key pair registered with Meta — that is a separate integration, not a proxy call. Exposing half of it would leave you thinking Flows were fully supported when they are not. Talk to us if you need the write path.
+
+---
+
+### Phone Number Lifecycle
+
+Everything in this section **changes the number itself**, not just its metadata. A deregistered number stops receiving messages immediately, and repeatedly requesting verification codes gets the number blocked from requesting more.
+
+Actions that cannot be undone require `"confirm": true` in the body, and return `400 CONFIRMATION_REQUIRED` without it. That flag exists because these calls end up inside your scripts, where one mis-targeted loop could disconnect every number you manage.
+
+#### Request a verification code
+```http
+POST /phone/request-code
+x-partner-key: wf_xxx
+x-waba-id: 123456789
+```
+```json
+{ "code_method": "SMS", "language": "en" }
+```
+
+`code_method` is `SMS` or `VOICE`.
+
+---
+
+#### Verify the code
+```http
+POST /phone/verify-code
+x-partner-key: wf_xxx
+x-waba-id: 123456789
+```
+```json
+{ "code": "123456" }
+```
+
+---
+
+#### Set the two-step verification PIN
+```http
+POST /phone/two-step
+x-partner-key: wf_xxx
+x-waba-id: 123456789
+```
+```json
+{ "pin": "123456" }
+```
+
+Exactly 6 digits.
+
+> **This changed in 2.9.0 and it matters.** Bridge needs this PIN to re-register a number after a migration or a recovery. Previously we only held one platform PIN, so a partner who changed the PIN in WhatsApp Manager broke our re-registration **silently**. Setting it through this endpoint stores your PIN encrypted against the client, and `/phone/register` reads it before falling back to the platform PIN. If you have ever changed a PIN outside Bridge, set it here once.
+
+---
+
+#### Re-register the number
+```http
+POST /phone/register
+x-partner-key: wf_xxx
+x-waba-id: 123456789
+```
+```json
+{ "pin": "123456" }
+```
+
+`pin` is optional — Bridge uses your stored PIN, then the platform PIN, in that order.
+
+---
+
+#### Deregister the number
+```http
+POST /phone/deregister
+x-partner-key: wf_xxx
+x-waba-id: 123456789
+```
+```json
+{ "confirm": true }
+```
+
+> ⚠️ The number stops receiving messages the moment this succeeds. Re-registering needs the PIN and, depending on how the number was onboarded, a fresh verification code.
+
+---
+
+### Calling
+
+WhatsApp Business Calling. Bridge passes your request body to Meta unchanged apart from `messaging_product` — every call action carries an SDP offer or answer produced by **your** WebRTC stack, and Bridge cannot validate or reshape SDP without being a media server, which it is not.
+
+**Before this works:**
+1. Enable calling on the number — `POST /settings` with `calling.status: "ENABLED"`.
+2. For business-initiated calls, the customer must have granted call permission first.
+
+Without both, Meta rejects the request with its own error, which we pass through untouched.
+
+```http
+POST /calls
+x-partner-key: wf_xxx
+x-waba-id: 123456789
+```
+```json
+{
+  "action": "connect",
+  "to": "+60123456789",
+  "session": { "sdp_type": "offer", "sdp": "<RFC 4566 SDP>" }
+}
+```
+
+`action` must be one of `connect`, `pre_accept`, `accept`, `reject`, `terminate`. Terminating takes `call_id` instead of `to`.
+
+Counts against your `rate_limit_per_sec`.
+
+---
+
+### Groups
+
+> ⚠️ **Groups must be enabled on your number by Meta.** If it is not, Meta returns `131000 "Something went wrong"` — an unhelpful message that says nothing about the real cause. We verified this against a live WABA while building these endpoints. **That is not a Bridge bug**, and Bridge passes Meta's status through unchanged. Contact Meta to have Groups enabled.
+
+You cannot add participants directly — that is Meta's design, not our limitation. You create a group, get an invite link, send the link, and people join themselves. You **can** remove participants.
+
+#### List active groups
+```http
+GET /groups
+x-partner-key: wf_xxx
+x-waba-id: 123456789
+```
+
+#### Create a group
+```http
+POST /groups
+x-partner-key: wf_xxx
+x-waba-id: 123456789
+```
+```json
+{
+  "subject": "New Purchase Inquiry",
+  "description": "Options for current year models",
+  "join_approval_mode": "auto_approve"
+}
+```
+
+`subject` max 128 characters. `join_approval_mode` is `auto_approve` (default) or `approval_required`. The invite link arrives on the `group_lifecycle_update` webhook.
+
+#### Group info
+```http
+GET /groups/{group_id}
+x-partner-key: wf_xxx
+x-waba-id: 123456789
+```
+
+Returns `subject`, `description`, `participants`, `join_approval_mode`.
+
+#### Remove participants
+```http
+DELETE /groups/{group_id}/participants
+x-partner-key: wf_xxx
+x-waba-id: 123456789
+```
+```json
+{ "participants": ["+60123456789"] }
+```
+
+Maximum 8 per request. A removed participant can no longer rejoin through the invite link.
+
+#### Delete a group
+```http
+DELETE /groups/{group_id}
+x-partner-key: wf_xxx
+x-waba-id: 123456789
+```
+```json
+{ "confirm": true }
+```
+
+---
+
 ## Receiving Webhooks
 
 ### Overview
@@ -2288,6 +2822,15 @@ There is no automatic token expiry webhook from Meta. Build a periodic health ch
 > composer require kobaranteguh/wasapflow-bridge-php
 > ```
 
+
+> **SDK coverage.** The SDKs cover client registration, messaging, templates,
+> media and broadcasts. The 32 surfaces added in 2.9.0 — QR codes, conversational
+> automation, blocking, commerce settings, settings, phone status, WABA
+> diagnostics, Flows, number lifecycle, calling and groups — are **not yet wrapped
+> in the SDKs**. Call them over plain HTTP with the same `x-partner-key` and
+> `x-waba-id` headers; every endpoint is standard REST and needs no SDK. SDK
+> methods will follow.
+
 ### Node.js
 
 ```javascript
@@ -2415,27 +2958,59 @@ Contact support to increase your limit.
 
 ---
 
+## Graph API Version
+
+Bridge calls Meta on **Graph API v26.0**, and all 32 webhook fields deliver
+**v26.0** payloads. Both moved from v24.0 on 21 August 2026.
+
+| | Version | Controls |
+|---|---|---|
+| Outbound calls | v26.0 | The requests Bridge makes to Meta on your behalf |
+| Webhook fields | v26.0 | The shape of the payloads Meta sends Bridge |
+
+**This does not change your integration.** Bridge normalises every Meta webhook
+into its own event envelope (`message.received`, `message.delivered`, …) and its
+own response shapes, so Meta's version has never been visible to you. It is
+documented here because the version appears in error traces and support tickets.
+
+Response shapes were compared across v24, v25 and v26 for every edge Bridge uses
+before the switch — all identical. v26's breaking changes are confined to
+Marketing API, Ads, Commerce Order Management and Rights Manager; none touch
+WhatsApp messaging.
+
+> Meta supports each Graph version for roughly two years. v26.0 was released
+> 29 July 2026 and has no announced end date. We track this and move ahead of the
+> deadline; you do not need to.
+
+---
+
 ## Meta API Coverage
 
 WasapFlow Bridge proxies the most commonly used Meta WhatsApp Cloud API endpoints.
 
 **Coexistence sync (Supported since 2.0.0):** For WABAs onboarded via the WhatsApp Business App (`connection_mode: "coexistence"`), Bridge forwards messages your client sends manually from the Business App (`message.echo`) and replays their past conversation history once after onboarding (`message.history`). See [Webhook Event Payloads](#webhook-event-payloads).
 
-The following Meta features are **not currently supported** through Bridge and are on the roadmap:
+**As of 2.9.0 Bridge exposes 68 partner endpoints across 24 Meta surfaces.** Every one was tested live against a real WABA before release, not copied from documentation.
 
-| Feature | Status |
-|---------|--------|
-| Phone Number Management (verify, list) | Roadmap |
-| Template Editing (update existing) | Roadmap |
-| Media Deletion | Roadmap |
-| WhatsApp Flows | Roadmap |
-| WhatsApp Business Calling | Roadmap |
-| QR Code Generation | Roadmap |
-| Commerce / Product Catalog | Roadmap |
-| Two-Step Verification (2FA PIN) | Handled during Embedded Signup |
+Still **not** available through Bridge:
+
+| Feature | Status | Why |
+|---------|--------|-----|
+| Flows — create / update / publish | Not planned as a proxy | Needs an endpoint you host plus an encryption key pair. Talk to us. |
+| Marketing Messages Lite (MM Lite) | Blocked | Requires Solution Partner tier, which WasapFlow does not yet hold |
+| Extended Credits | Blocked | Solution Partner tier |
+| Pre-Verified Phone Numbers | Blocked | Solution Partner tier |
+| Migration Intent (move a number between BSPs) | Roadmap | |
+| Business Encryption (Flows key management) | Roadmap | Pairs with the Flows write path |
+| Business Compliance Information | Not planned | India-only requirement |
+| Payments | Not planned | India & Brazil only |
+| Bot Details | Unavailable | Meta returns "nonexisting field" on v24.0 |
+| Message History Events | Unavailable | Meta returns "unknown path" on v24.0 |
+
+The last two are documented by Meta but do not resolve on the current Graph version. We verified both directly rather than assume — an endpoint that always errors is worse than one that does not exist, because it looks like our bug.
 
 > Meta API evolves regularly. WasapFlow tracks the latest changes and updates Bridge endpoints accordingly. If you need a specific Meta endpoint that isn't available, contact support — we may be able to add it.
 
 ---
 
-*WasapFlow Bridge API Reference v2.8.0 — for registered partners only.*
+*WasapFlow Bridge API Reference v2.9.0 — for registered partners only.*
