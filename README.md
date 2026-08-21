@@ -192,42 +192,74 @@ Full detail for every notice, plus the Meta platform calendar: **[Changelog](?ta
 
 ---
 
-## Quick Start (Node.js)
+## Quick Start
+
+**There is no SDK to install.** Every endpoint is plain REST over HTTPS with two
+headers, so use whatever HTTP client your language already has — `fetch`, `axios`,
+Guzzle, `requests`, `httpx`, `curl`. Nothing to add to `package.json`.
 
 ```bash
-# Install SDK
-npm install github:kobaranteguh/wasapflow-bridge-node   # Node.js
-pip install git+https://github.com/kobaranteguh/wasapflow-bridge-python.git  # Python
-composer require kobaranteguh/wasapflow-bridge-php      # PHP
+curl -X POST https://officialapi.wasapflow.com/bridge/v1/clients/register   -H "x-partner-key: wf_your_key"   -H "Content-Type: application/json"   -d '{
+    "waba_id": "123456789",
+    "phone_number_id": "987654321",
+    "access_token": "EAAxxxxxxxx",
+    "display_name": "My Client Business"
+  }'
 ```
+
+Then send a message. Note `x-waba-id` — it picks which of your clients' numbers
+sends, and every endpoint below takes it:
+
+```bash
+curl -X POST https://officialapi.wasapflow.com/bridge/v1/messages/send   -H "x-partner-key: wf_your_key"   -H "x-waba-id: 123456789"   -H "Content-Type: application/json"   -d '{ "to": "60123456789", "text": "Hello!" }'
+```
+
+The same two calls in JavaScript:
 
 ```javascript
-const { WasapFlowBridge } = require('wasapflow-bridge');
+const BASE = 'https://officialapi.wasapflow.com/bridge/v1';
 
-const bridge = new WasapFlowBridge({
-    partnerKey: process.env.WF_PARTNER_KEY,
-    webhookSecret: process.env.WF_WEBHOOK_SECRET
+async function bridge(path, { method = 'GET', wabaId, body } = {}) {
+    const res = await fetch(BASE + path, {
+        method,
+        headers: {
+            'x-partner-key': process.env.WF_PARTNER_KEY,
+            ...(wabaId ? { 'x-waba-id': wabaId } : {}),
+            'Content-Type': 'application/json',
+        },
+        body: body ? JSON.stringify(body) : undefined,
+    });
+    const data = await res.json();
+    // Bridge maps error codes onto HTTP status, so res.ok is meaningful.
+    if (!data.success) throw new Error(`${data.error.code}: ${data.error.message}`);
+    return data;
+}
+
+await bridge('/clients/register', {
+    method: 'POST',
+    body: {
+        waba_id: '123456789',
+        phone_number_id: '987654321',
+        access_token: 'EAAxxxxxxxx',
+        display_name: 'My Client Business',
+    },
 });
 
-// Register your client's WABA (from Embedded Signup)
-// Note: SDK uses camelCase — raw HTTP API uses snake_case (see Endpoints section)
-await bridge.clients.register({
+await bridge('/messages/send', {
+    method: 'POST',
     wabaId: '123456789',
-    phoneNumberId: '987654321',
-    accessToken: 'EAAxxxxxxxx',
-    displayName: 'My Client Business'
+    body: { to: '60123456789', text: 'Hello!' },
 });
-
-// Send a message
-const waba = bridge.client('123456789');
-await waba.messages.send({ to: '60123456789', text: 'Hello!' });
 ```
+
+That helper is the whole integration surface. Copy it, and every one of the 68
+endpoints in this document works through it.
 
 ---
 
 ## Field Naming Convention
 
-> **Important:** The raw HTTP API uses **snake_case** for all request/response fields (`waba_id`, `phone_number_id`, `access_token`). The SDKs use **camelCase** internally (`wabaId`, `phoneNumberId`, `accessToken`) and convert automatically. If you call the API directly without an SDK, always use snake_case.
+> **Every field is `snake_case`** — requests and responses alike: `waba_id`, `phone_number_id`, `access_token`, `display_name`, `registered_at`. There is no camelCase form of this API anywhere. Earlier versions of this page showed camelCase in one response example; that was wrong and has been corrected.
 
 ---
 
@@ -853,7 +885,6 @@ POST /messages/interactive
 }
 ```
 
-> Using the SDK? `waba.messages.buttons({ to, body, buttons })` and `waba.messages.list({ to, body, button, sections })` build these automatically.
 
 ---
 
@@ -2813,113 +2844,116 @@ There is no automatic token expiry webhook from Meta. Build a periodic health ch
 
 ---
 
-## SDK Reference
+## Calling Bridge From Your Language
 
-> SDKs are installed directly from GitHub (not yet published to npm/PyPI/Packagist):
-> ```bash
-> npm install github:kobaranteguh/wasapflow-bridge-node
-> pip install git+https://github.com/kobaranteguh/wasapflow-bridge-python.git
-> composer require kobaranteguh/wasapflow-bridge-php
-> ```
+There is no WasapFlow SDK, and you do not need one. Bridge is plain REST: two
+headers, JSON in, JSON out. Below is the same request in four languages — each
+is complete, with nothing to install beyond what the language already ships or
+what your project almost certainly already has.
 
+**The two headers, everywhere:**
 
-> **SDK coverage.** The SDKs cover client registration, messaging, templates,
-> media and broadcasts. The 32 surfaces added in 2.9.0 — QR codes, conversational
-> automation, blocking, commerce settings, settings, phone status, WABA
-> diagnostics, Flows, number lifecycle, calling and groups — are **not yet wrapped
-> in the SDKs**. Call them over plain HTTP with the same `x-partner-key` and
-> `x-waba-id` headers; every endpoint is standard REST and needs no SDK. SDK
-> methods will follow.
+| Header | Value | When |
+|---|---|---|
+| `x-partner-key` | `wf_your_key` | Every request |
+| `x-waba-id` | The client's WABA id | Every request that acts on a specific client's number |
 
-### Node.js
+**cURL**
+```bash
+curl -X POST https://officialapi.wasapflow.com/bridge/v1/messages/send   -H "x-partner-key: $WF_PARTNER_KEY"   -H "x-waba-id: 123456789"   -H "Content-Type: application/json"   -d '{ "to": "60123456789", "text": "Hello!" }'
+```
+
+**JavaScript / TypeScript** — `fetch` is built in to Node 18+, Deno, Bun and browsers.
+```javascript
+const res = await fetch('https://officialapi.wasapflow.com/bridge/v1/messages/send', {
+    method: 'POST',
+    headers: {
+        'x-partner-key': process.env.WF_PARTNER_KEY,
+        'x-waba-id': '123456789',
+        'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({ to: '60123456789', text: 'Hello!' }),
+});
+const data = await res.json();
+if (!data.success) throw new Error(`${data.error.code}: ${data.error.message}`);
+console.log(data.message_id);
+```
+
+**Python** — `requests` or `httpx`, either is fine.
+```python
+import os, requests
+
+res = requests.post(
+    'https://officialapi.wasapflow.com/bridge/v1/messages/send',
+    headers={
+        'x-partner-key': os.environ['WF_PARTNER_KEY'],
+        'x-waba-id': '123456789',
+    },
+    json={'to': '60123456789', 'text': 'Hello!'},
+    timeout=15,
+)
+data = res.json()
+if not data.get('success'):
+    raise RuntimeError(f"{data['error']['code']}: {data['error']['message']}")
+print(data['message_id'])
+```
+
+**PHP** — Guzzle, which most PHP projects already have.
+```php
+use GuzzleHttp\Client;
+
+$http = new Client(['base_uri' => 'https://officialapi.wasapflow.com/bridge/v1/']);
+
+$res = $http->post('messages/send', [
+    'headers' => [
+        'x-partner-key' => getenv('WF_PARTNER_KEY'),
+        'x-waba-id'     => '123456789',
+    ],
+    'json'        => ['to' => '60123456789', 'text' => 'Hello!'],
+    'http_errors' => false,
+]);
+
+$data = json_decode((string) $res->getBody(), true);
+if (empty($data['success'])) {
+    throw new RuntimeException($data['error']['code'] . ': ' . $data['error']['message']);
+}
+echo $data['message_id'];
+```
+
+### Write one small wrapper, not a client library
+
+Every endpoint in this document differs only in path, method and body. One
+function covers all 68 — that is the entire abstraction worth having:
 
 ```javascript
-const { WasapFlowBridge } = require('wasapflow-bridge');
-
-const bridge = new WasapFlowBridge({ partnerKey, webhookSecret });
-
-// Embedded Signup (recommended)
-const config = await bridge.clients.getEmbeddedSignupConfig(); // { app_id, config_id }
-await bridge.clients.registerFromCode({ code, displayName });  // exchange code securely
-
-// Client management (manual)
-await bridge.clients.register({ wabaId, phoneNumberId, accessToken, displayName });
-await bridge.clients.list();
-await bridge.clients.remove(wabaId);
-await bridge.clients.refresh(wabaId, { accessToken }); // accessToken optional — updates token + syncs quality
-await bridge.clients.resubscribeWebhook(wabaId);       // reconnect Meta webhook
-
-// Scoped to a WABA
-const waba = bridge.client(wabaId);
-await waba.messages.send({ to, text });
-await waba.messages.template({ to, template, language, params });
-await waba.messages.media({ to, type, url, caption });
-await waba.messages.interactive({ to, body, buttons });
-await waba.messages.location({ to, latitude, longitude, name, address });
-await waba.messages.reaction({ to, messageId, emoji });
-await waba.messages.markRead({ messageId });
-await waba.templates.list();
-await waba.templates.create({ name, language, category, components });
-await waba.templates.delete(name);
-await waba.profile.get();
-await waba.profile.update({ about, address, email, websites });
-await waba.analytics.get({ days: 7 });
-await waba.broadcasts.create({ name, templateName, templateLanguage, templateComponents, contacts });
-await waba.broadcasts.list();
-await waba.broadcasts.get(broadcastId);
-await waba.broadcasts.cancel(broadcastId);
-await waba.contacts.check(phone);
-await waba.contacts.downloadMedia(mediaId);
-
-// Webhook verification
-bridge.webhooks.verify(headers, body); // returns parsed event object or null
+async function bridge(path, { method = 'GET', wabaId, body } = {}) {
+    const res = await fetch('https://officialapi.wasapflow.com/bridge/v1' + path, {
+        method,
+        headers: {
+            'x-partner-key': process.env.WF_PARTNER_KEY,
+            ...(wabaId ? { 'x-waba-id': wabaId } : {}),
+            'Content-Type': 'application/json',
+        },
+        body: body ? JSON.stringify(body) : undefined,
+    });
+    const data = await res.json();
+    if (!data.success) {
+        const e = new Error(`${data.error.code}: ${data.error.message}`);
+        e.code = data.error.code;
+        e.metaCode = data.error.meta_code;   // branch on this, never on message text
+        e.status = res.status;
+        throw e;
+    }
+    return data;
+}
 ```
 
----
+Two things that wrapper should do, and most hand-rolled ones forget:
 
-### Python
-
-```python
-from wasapflow_bridge import WasapFlowBridge
-
-bridge = WasapFlowBridge(partner_key=os.environ['WF_PARTNER_KEY'])
-
-config = bridge.clients.get_embedded_signup_config()  # { app_id, config_id }
-bridge.clients.register_from_code(code, display_name='My Client')
-
-bridge.clients.register(waba_id, phone_number_id, access_token, display_name)  # manual
-bridge.clients.refresh(waba_id, access_token=None)
-bridge.clients.resubscribe_webhook(waba_id)
-
-waba = bridge.client(waba_id)
-await waba.messages.send(to='60123456789', text='Hello!')
-await waba.messages.template(to='60123456789', template='order_confirmed', language='en_US', params=['John'])
-await waba.analytics.get(days=7)
-```
-
----
-
-### PHP
-
-```php
-use WasapFlow\Bridge\WasapFlowBridge;
-
-$bridge = new WasapFlowBridge(['partnerKey' => getenv('WF_PARTNER_KEY')]);
-
-$config = $bridge->clients->getEmbeddedSignupConfig(); // { app_id, config_id }
-$bridge->clients->registerFromCode($code, $displayName);
-
-$bridge->clients->register($wabaId, $phoneNumberId, $accessToken, $displayName); // manual
-$bridge->clients->refresh($wabaId, $accessToken = null);
-$bridge->clients->resubscribeWebhook($wabaId);
-
-$waba = $bridge->client($wabaId);
-$waba->messages->send(['to' => '60123456789', 'text' => 'Hello!']);
-$waba->messages->template(['to' => '60123456789', 'template' => 'order_confirmed', 'language' => 'en_US', 'params' => ['John']]);
-$waba->analytics->get(['days' => 7]);
-```
-
----
+1. **Branch on `error.meta_code`, never on `error.message`.** Meta rewords messages
+   without warning. The code is stable.
+2. **Read the notice headers.** `X-Bridge-Notice-Level` tells you when a Meta change
+   needs your attention before it takes effect. See [Change Notices](#change-notices).
 
 ## Health Check
 
