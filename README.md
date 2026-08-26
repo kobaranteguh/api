@@ -1,7 +1,7 @@
 # WasapFlow Bridge — API Reference
 
-**Version:** 2.9.0  
-**Last Updated:** 21 August 2026  
+**Version:** 2.9.1  
+**Last Updated:** 27 August 2026  
 **Base URL:** `https://officialapi.wasapflow.com/bridge/v1`  
 **Auth Header:** `x-partner-key: wf_your_key`
 
@@ -964,6 +964,51 @@ POST /messages/read
   "message_id": "wamid.xxx"
 }
 ```
+
+---
+
+### Quoted Replies (`context`)
+
+Any message can be sent as a reply to an earlier one, showing the quoted bubble
+above it in WhatsApp. Add `context` to the body of any send endpoint:
+
+```json
+{
+  "to": "60123456789",
+  "text": "Yes, that one is in stock.",
+  "context": { "message_id": "wamid.HBgMNjAxMTY0NjI1MTA3FQIAERgS..." }
+}
+```
+
+Works on `/messages/send`, `/messages/template`, `/messages/media`,
+`/messages/interactive` and `/messages/location`.
+
+**Where the wamid comes from** — either source is valid:
+
+| Source | Field |
+|---|---|
+| A message you sent | `message_id` in the send response |
+| A message you received | `data.message_id` on the inbound webhook |
+
+**Three accepted shapes.** Use whichever fits your code; they are equivalent:
+
+```json
+{ "context": { "message_id": "wamid..." } }
+{ "context_message_id": "wamid..." }
+{ "reply_to": "wamid..." }
+```
+
+If both `context` and an alias are given, `context` wins.
+
+> ⚠️ **A `context` we cannot parse returns `400 INVALID_PAYLOAD`** — it is not
+> sent untagged. Empty `context: {}`, a blank `reply_to`, or a non-string
+> `message_id` all fail loudly at the call site. Do not retry these; correct the
+> body. Before 2.9.1 a `context` was discarded silently and the send returned
+> `200`, which is exactly the failure this guard exists to prevent.
+
+> Meta ignores a `context` pointing at a message it cannot find — the message
+> sends without a quote and no error is raised. If a tag does not appear, check
+> the wamid is the exact string you were given, unmodified.
 
 ---
 
@@ -3047,4 +3092,4 @@ The last two are documented by Meta but do not resolve on the current Graph vers
 
 ---
 
-*WasapFlow Bridge API Reference v2.9.0 — for registered partners only.*
+*WasapFlow Bridge API Reference v2.9.1 — for registered partners only.*
