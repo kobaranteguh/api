@@ -1,7 +1,7 @@
 # WasapFlow Bridge — API Reference
 
-**Version:** 2.9.1  
-**Last Updated:** 27 August 2026  
+**Version:** 2.9.2  
+**Last Updated:** 1 September 2026  
 **Base URL:** `https://officialapi.wasapflow.com/bridge/v1`  
 **Auth Header:** `x-partner-key: wf_your_key`
 
@@ -2889,6 +2889,28 @@ There is no automatic token expiry webhook from Meta. Build a periodic health ch
 
 ---
 
+
+### `PAYMENT_ACTION_REQUIRED` (402)
+
+Your bank requires 3D Secure authentication before the charge can complete. The
+card was **not** declined — do not ask the client to replace it.
+
+```json
+{ "success": false,
+  "error": {
+    "code": "PAYMENT_ACTION_REQUIRED",
+    "message": "Your bank requires 3D Secure authentication for this payment...",
+    "payment_url": "https://invoice.stripe.com/i/acct_.../live_..."
+  } }
+```
+
+Open `payment_url` — a Stripe-hosted page where the payment can be authenticated,
+or a different card entered. The WABA activates automatically once the invoice is
+paid; there is no need to reconnect.
+
+Do not retry this call. Retrying creates nothing new and changes nothing — the
+invoice is already waiting.
+
 ## Calling Bridge From Your Language
 
 There is no WasapFlow SDK, and you do not need one. Bridge is plain REST: two
@@ -3092,4 +3114,4 @@ The last two are documented by Meta but do not resolve on the current Graph vers
 
 ---
 
-*WasapFlow Bridge API Reference v2.9.1 — for registered partners only.*
+*WasapFlow Bridge API Reference v2.9.2 — for registered partners only.*
