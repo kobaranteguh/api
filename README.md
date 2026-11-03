@@ -1,12 +1,14 @@
 # WasapFlow Bridge — API Reference
 
 **Version:** 2.9.2  
-**Last Updated:** 1 September 2026  
+**Last Updated:** 4 November 2026  
 **Base URL:** `https://officialapi.wasapflow.com/bridge/v1`  
 **Auth Header:** `x-partner-key: wf_your_key`
 
 > ⚠️ **Meta pricing change — effective 1 October 2026.** Service messages (non-template replies inside the 24-hour customer service window) and utility templates sent inside that window become billable. **How you send does not change** — service messages still need no template and no Meta pre-approval. Only the billing changes. See the [Changelog](?tab=changelog) for what to do now.
 
+> **New (4 November 2026):** [Support Tickets](#support-tickets) — open, list, read and reply to support tickets from your own system or AI agent (`POST /tickets`, `GET /tickets`, `GET /tickets/{uid}`, `POST /tickets/{uid}/reply`). Additive — nothing existing changed.
+>
 > **What's new in 2.9.0:** **32 new endpoints.** Bridge previously exposed 13 of Meta's ~38 Cloud API surfaces — the rest were never missing, just never asked for, which meant emailing us and having us run the call for you. Now open: [QR codes & short links](#qr-codes--short-links), [conversational automation](#conversational-automation) (ice breakers, commands, welcome message), [blocking](#blocked-users), [commerce settings](#commerce-settings), [call & storage settings](#settings-calling--storage), [phone number status](#phone-number-status), [WABA details, audit log, assigned users](#whatsapp-business-account), [schedules](#schedules), [Flows (read-only)](#flows-read-only), [phone number lifecycle](#phone-number-lifecycle), [calling](#calling) and [groups](#groups). Meta errors now carry `meta_code`, `meta_subcode` and `details` instead of just message text. Irreversible actions need `{"confirm": true}`.
 >
 > **What's new in 2.2.0:** Every message status webhook now carries a `pricing` object so you can attribute Meta's cost per message, plus a `conversation` object. Every API response carries [notice headers](#change-notices), and every webhook carries a `meta` object pointing at the changelog. All additive — no existing field changed.
@@ -560,6 +562,29 @@ x-partner-key: wf_xxx
 | `limit` | `100` | `500` |
 | `offset` | `0` | — |
 
+> `phone_number` is the number Meta holds for `phone_number_id`. Map by this
+> field, never by `display_name` — that label is free text you set once, and
+> it does not follow the number if the number changes.
+
+> **A WABA with more than one number.** Each number now gets its own client
+> row, so `/clients` lists them separately under the same `waba_id`. Where a
+> WABA has two or more, `x-waba-id` alone no longer identifies a number, and
+> every endpoint will refuse the call:
+>
+> ```json
+> { "success": false, "error": { "code": "META_ERROR",
+>   "message": "WABA 123 has 2 registered numbers — send x-phone-number-id to choose one: ..." } }
+> ```
+>
+> Add the header `x-phone-number-id: <id>` to pick one. This is deliberate:
+> choosing for you would send your messages from the wrong number, and the
+> only person who would notice is the customer receiving them.
+>
+> WABAs with a single number are unaffected — no header needed.
+>
+> **Billing does not change.** Slots are counted per WABA, not per number, so
+> a second number on an existing WABA costs nothing extra.
+
 **Response:**
 ```json
 {
@@ -568,6 +593,7 @@ x-partner-key: wf_xxx
     {
       "waba_id": "123456789",
       "phone_number_id": "987654321",
+      "phone_number": "+60 11-5440 0067",
       "display_name": "My Client Business",
       "status": "active",
       "tier": "STANDARD",
@@ -801,6 +827,40 @@ POST /messages/template
 ---
 
 #### Send Media (Image / Document / Audio / Video)
+
+> **Validation, and what Bridge does not check.** Bridge now rejects, before
+> calling Meta: a `type` outside `image | video | audio | document | sticker`,
+> a `media` object with neither `id` nor `link` (or both), and `filename` on an
+> `image`. These come back as `INVALID_FIELD` with the offending `field` named.
+>
+> `voice` is an **inbound webhook type only**. Send voice notes as `audio`.
+>
+> Everything else in the `media` object is passed to Meta untouched. Meta does
+> not publish a full per-type key matrix, so Bridge does not guess one —
+> rejecting keys we cannot verify would break payloads that work today. If Meta
+> returns `meta_code 100` naming a key, that key is not valid for that type.
+>
+> **Sizes** (`/media/upload` enforces these after download, before Meta):
+>
+> | Type | MIME | Max |
+> |---|---|---|
+> | image | `image/jpeg`, `image/png` | 5 MB |
+> | video | `video/mp4`, `video/3gpp` | 16 MB |
+> | audio | `audio/aac`, `amr`, `mpeg`, `mp4`, `ogg` | 16 MB |
+> | document | pdf, doc(x), xls(x), ppt(x), `text/plain` | 100 MB |
+> | sticker | `image/webp` | 100 KB static, 500 KB animated |
+>
+> Oversize returns `MEDIA_TOO_LARGE` with `size_bytes` and `limit_bytes`.
+> An unsupported `mime_type` is refused before the file is fetched at all.
+>
+> **URL lifetime.** `/media/upload` fetches your URL once, synchronously,
+> during the request, with a 30-second timeout. One-time links are fine —
+> delete them as soon as `media_id` comes back.
+>
+> **Filename comes from the URL path**, not from any field you send:
+> `/media/a1b2c3?token=…` becomes `a1b2c3`, with no extension. Harmless for
+> images; document recipients will see a file with no extension. Put a real
+> name in the path if it matters.
 ```http
 POST /messages/media
 ```
@@ -1881,6 +1941,33 @@ x-waba-id: 123456789
 
 `pin` is optional — Bridge uses your stored PIN, then the platform PIN, in that order.
 
+> **Bringing a second number online.** A WABA can hold several numbers, but
+> Bridge stores one client row per WABA, so only one of them is *the* client.
+> Every provisioning endpoint below — `/phone-status`, `/phone/request-code`,
+> `/phone/verify-code`, `/phone/two-step`, `/phone/register`,
+> `/phone/deregister` — accepts an optional **`phone_number_id`** to target
+> another number under the same WABA. Omit it and you get the client's own
+> number, exactly as before.
+>
+> ```json
+> { "phone_number_id": "1377823848737261", "pin": "123456" }
+> ```
+>
+> The number must belong to your WABA; Bridge checks with Meta and returns
+> `does not belong to WABA` otherwise. Use `GET /clients` (`phone_number`) and
+> your WhatsApp Manager to find the id.
+>
+> Embedded Signup will **not** get a new number registered — Meta's dialog
+> only lists numbers already live on Cloud API, so it returns the one that
+> already works. A number sitting at `status: PENDING` with
+> `platform_type: NOT_APPLICABLE` has never been registered; the sequence is
+> `/phone/two-step` (set the PIN) then `/phone/register`, both with
+> `phone_number_id`.
+>
+> `/phone/two-step` stores the PIN against the client row only when the target
+> is the client's own number, so a sibling's PIN cannot overwrite the one
+> re-registration depends on. Keep a sibling's PIN yourself.
+
 ---
 
 #### Deregister the number
@@ -1985,6 +2072,105 @@ x-waba-id: 123456789
 ```json
 { "confirm": true }
 ```
+
+---
+
+### Support Tickets
+
+Open and follow up support tickets programmatically — for example from your own AI agent when it hits a problem on the WasapFlow or Meta side. Tickets opened through the API appear in the partner portal under **Support**, and the same tickets are readable through both.
+
+All endpoints use the usual `x-partner-key` header. Responses follow the standard `{ "success": true, "data": … }` / `{ "success": false, "error": { "code", "message" } }` shape.
+
+> **Do not** open tickets for validation errors in your own requests (`MISSING_FIELDS`, `INVALID_PAYLOAD`, wrong template parameters, a closed 24-hour window). **Never** include API keys, access tokens or webhook secrets — known key formats are redacted automatically, but do not rely on that.
+
+#### Open a ticket
+```http
+POST /tickets
+x-partner-key: wf_xxx
+x-waba-id: 1234567890
+Content-Type: application/json
+```
+
+| Field | Type | Notes |
+|---|---|---|
+| `subject` | string, required | Max 200 characters. |
+| `category` | string | `technical` (default), `billing`, `onboarding`, `other`. |
+| `priority` | string | `normal` (default), `high`, `urgent`. |
+| `waba_id` | string | Optional. Must be a WABA registered to your account, otherwise `403 FORBIDDEN`. The `x-waba-id` header is used when the field is omitted. |
+| `phone_number_id` | string | Optional. Filled from the WABA when omitted. |
+| `message` | string, required | Max 20,000 characters. Include what happened, when it started (with timezone), the exact error (Meta code, `fbtrace_id`), what you tried and the business impact. |
+| `diagnostics` | object | Optional raw data (error JSON, sample request/response, message IDs). Max 20 KB serialised. |
+
+```bash
+curl -X POST https://officialapi.wasapflow.com/bridge/v1/tickets \
+  -H "x-partner-key: YOUR_PARTNER_KEY" \
+  -H "x-waba-id: 1234567890" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "subject": "Outbound messages failing with 131000 since 14:05",
+    "category": "technical",
+    "priority": "urgent",
+    "phone_number_id": "1098765432",
+    "message": "Since 2026-11-02 14:05 UTC+8 every POST /messages/send for this number returns 502 META_ERROR 131000. Retried with backoff for 30 minutes and checked the number is CONNECTED. All outbound replies for this client are failing.",
+    "diagnostics": { "meta_code": 131000, "fbtrace_id": "AbCdEf123" }
+  }'
+```
+
+Returns **201** with `data.uid` (e.g. `TKT-AB12CD`). If you already have a ticket with the same subject (case-insensitive) that is not closed and was opened in the last 24 hours, your message is added to that ticket instead and the response is **200** with `"deduplicated": true`.
+
+**Limit:** 20 new tickets per 24 hours per partner account — beyond that the API returns `429 QUOTA_EXCEEDED`. Reply to an existing ticket instead.
+
+```json
+{
+  "success": true,
+  "deduplicated": false,
+  "data": {
+    "uid": "TKT-AB12CD",
+    "subject": "Outbound messages failing with 131000 since 14:05",
+    "category": "technical",
+    "priority": "urgent",
+    "status": "open",
+    "waba_id": "1234567890",
+    "phone_number_id": "1098765432",
+    "source": "api",
+    "created_at": "2026-11-02T06:10:00.000Z",
+    "updated_at": "2026-11-02T06:10:00.000Z",
+    "last_reply_at": "2026-11-02T06:10:00.000Z",
+    "last_reply_by": "partner",
+    "closed_at": null
+  }
+}
+```
+
+#### List your tickets
+```http
+GET /tickets?status=open
+x-partner-key: wf_xxx
+```
+
+`status` is optional: `open` (waiting for us), `answered` (we replied), `awaiting_partner` (we need information from you), `closed`. Returns your own tickets only, newest activity first (max 200).
+
+#### Read a ticket and its messages
+```http
+GET /tickets/{uid}
+x-partner-key: wf_xxx
+```
+
+Returns the ticket plus `messages[]` (`author` is `partner` or `staff`). Tickets that belong to another partner return `404 NOT_FOUND`. Poll no more often than every 15 minutes — you also receive an email when we reply.
+
+#### Reply to a ticket
+```http
+POST /tickets/{uid}/reply
+x-partner-key: wf_xxx
+Content-Type: application/json
+```
+```json
+{ "message": "Still failing as of 15:30 UTC+8. New fbtrace_id attached.", "diagnostics": { "fbtrace_id": "XyZ987" } }
+```
+
+The ticket status becomes `open` again. Replying to a `closed` ticket reopens it (`"reopened": true`) — no need to open a new ticket for the same issue.
+
+Screenshots can be attached from the portal only. A ready-made prompt for your AI agent is on the portal's Support page.
 
 ---
 
@@ -2296,7 +2482,7 @@ Meta charges per **delivered** message under per-message pricing (PMP). These tw
 |---|---|---|
 | `pricing.billable` | `true` / `false` | Whether Meta charges for this message |
 | `pricing.pricing_model` | `PMP` | Per-message pricing |
-| `pricing.type` | `regular`, `free_customer_service`, `free_entry_point` | See below |
+| `pricing.type` | `regular`, `free_customer_service`, `free_group_customer_service`, `free_entry_point` | See below |
 | `pricing.category` | `service`, `utility`, `marketing`, `authentication`, `referral_conversion` | Which rate applies |
 | `conversation.id` | string | Meta's conversation ID |
 | `conversation.origin` | same values as `category` | What opened the conversation |
@@ -2306,10 +2492,48 @@ Both are `null` when Meta does not supply them — commonly on `read` receipts. 
 **Why `pricing.type` matters right now:**
 
 - `regular` — billable today.
-- `free_customer_service` — free today, **becomes billable on 1 October 2026**. This covers both non-template service replies and utility templates sent inside an open customer service window.
+- `free_customer_service` — a service message inside Meta's **free tier of 1,000 delivered service messages per business phone number per month**, or (until 30 September 2026) a utility template sent inside an open customer service window. Not billed.
+- `regular` with `category: service` — a service message **after** the phone number's free tier is used that month. Billed at the market's service rate (equal to utility/authentication). **From 1 October 2026.**
+- `regular` with `category: utility` — from 1 October 2026 this includes utility templates sent inside an open window, which were `free_customer_service` before. Billed.
+- `free_group_customer_service` / `category: group_service` — group service messages inside the same free tier (one unit per delivered recipient).
+
+Meta decides which side of the free tier a message lands on and tells you in this object. **Count from it** — do not infer billing from message text or your own window logic. Only `delivered` statuses consume the tier.
+
+**Payment method.** Meta: *"If you do not have a payment method for your WhatsApp Business account, Meta will deliver service messages within the shared free tier but not deliver them after the free tier has been used."* A number with no payment method stops delivering replies at message 1,001, silently. Check Billing Hub for every client before 1 October.
 - `free_entry_point` — inside the 72-hour free entry point window. **Stays free.**
 
-To project your 1 October exposure, count messages where `pricing.type === "free_customer_service"` over a full month. That count multiplied by the published rate is your added cost. Meta publishes the rates by 1 September 2026.
+To project your 1 October exposure, use **`GET /usage/whatsapp?month=YYYY-MM`** (below) or count delivered messages with `category: service` over a full month; everything past 1,000 per phone number is billable at the market's service rate. Rates effective 1 October 2026 are published on Meta's pricing page (Malaysia: USD 0.014 per service message).
+
+#### Usage — WhatsApp messages per phone number per month
+```http
+GET /usage/whatsapp?month=2026-10
+x-partner-key: wf_xxx
+```
+Optional filters: `waba_id`, `phone_number_id`. `month` defaults to the current month (Asia/Kuala_Lumpur; Meta resets at 12am WABA time). Counts include statuses `delivered` and `read` (a read message was delivered).
+
+Add **`include=meta`** to also return Meta's own delivered counts for the month, per business phone number and `pricing_type`, from `pricing_analytics` — one Graph call per WABA. Use it to reconcile: if Bridge's `phones[].service_free` is far below `meta.wabas[].phones[].service_free`, webhooks were missed on the way to Bridge, not by you.
+
+```json
+"meta": { "month": "2026-10", "source": "meta pricing_analytics VOLUME (delivered)", "cost_available": false,
+          "wabas": [ { "waba_id": "895343399927202", "ok": true,
+                       "phones": [ { "display_phone_number": "601171306595", "service_free": 2293, "service_paid": 0, "utility": 909, "authentication": 95, "fep": 0,
+                                     "free_tier_remaining": 0, "estimated_cost_usd_from_meta_volume": 6.90 } ] } ] }
+```
+
+**Meta does not return COST for these WABAs.** Every WABA onboarded through a partner app gets `"COST is not shown for businesses who bill through a partner (i.e. BSP)"` from Meta, even though the merchant pays Meta directly. The merchant's actual invoice is only visible in their own Billing Hub. Everything Bridge shows as cost is an estimate from counts × Meta's published rate card, and is labelled as such.
+
+```json
+{ "success": true, "month": "2026-10", "free_tier_per_phone": 1000, "rate_card_effective": "2026-10-01",
+  "phones": [ { "phone_number_id": "1352430714615301", "waba_id": "895343399927202",
+                "service_sent": 3450, "service_free": 1000, "service_paid": 2450,
+                "utility": 120, "marketing": 40, "authentication": 12, "fep": 300,
+                "estimated_cost_usd": 36.16, "actual_meta_cost_usd": null,
+                "free_tier_remaining": 0,
+                "warnings": [ "Meta is billing service messages on this number: the free tier for this month is used up.",
+                              "WhatsApp billing method required. ..." ] } ],
+  "totals": { "service_free": 1000, "service_paid": 2450, "estimated_cost_usd": 36.16 } }
+```
+`service_free` and `service_paid` are what Meta marked (`free_customer_service` vs `regular`) — Bridge does not compute the tier itself. `estimated_cost_usd` is billable rows × Meta's 1 Oct 2026 USD rate card by recipient market; **`actual_meta_cost_usd` is never estimated** and stays `null` until a Meta invoice or analytics figure is imported for that number and month.
 
 ---
 
@@ -2473,13 +2697,17 @@ To project your 1 October exposure, count messages where `pricing.type === "free
   "timestamp": 1715695200,
   "data": {
     "waba_id": "123456789",
-    "tier": "TIER_10K",
+    "tier": "TIER_2K",
+    "max_daily_per_phone": 2000,
+    "max_phone_numbers": 25,
     "raw": { ... }
   }
 }
 ```
 
 > **Tier values:** `TIER_250`, `TIER_1K`, `TIER_2K`, `TIER_10K`, `TIER_100K`, `UNLIMITED`
+>
+> **Delivery fix (21 Sep 2026).** Meta sends template and account-level webhooks (`template.*`, `waba.account_updated`, `waba.review_updated`, `waba.tier_updated`, `waba.quality_updated`, `waba.alert`, `waba.pricing_tier_updated`) to the app's main callback URL, never to a WABA's override URL. Before this date Bridge only listened for them on the override URL, so **none of these events reached partners**. They are delivered from 21 September 2026. Events from before that date were not replayed; use `GET /templates` for current template status.
 
 ---
 
@@ -2680,26 +2908,41 @@ To project your 1 October exposure, count messages where `pricing.type === "free
 
 ---
 
-#### `waba.offboarded` / `waba.reconnected` — Coexistence re-registration 🆕
+#### `waba.offboarded` / `waba.partner_removed` / `waba.reconnected` — Meta connection state 🆕
 
-Fired when a Coexistence client re-registers their WhatsApp Business App (new device, reinstall). Meta offboards the number, then reonboards it automatically in the background, usually within a few minutes.
+Fired when Meta changes WasapFlow's access to a client's number. The same state is on `GET /clients` as `connection_state` (`connected`, `offboarded`, `partner_removed`) with `connection_state_at` and `connection_state_reason`, and the dashboard shows it instead of ACTIVE.
+
+| Webhook | Meta event | What it means | Sends fail with |
+|---|---|---|---|
+| `waba.offboarded` | `ACCOUNT_OFFBOARDED` | Coexistence number: the WhatsApp Business app was reinstalled, re-registered or moved to another device. Meta normally reconnects it automatically within minutes. | `133010` |
+| `waba.partner_removed` | `PARTNER_REMOVED`, `PARTNER_APP_UNINSTALLED` | WasapFlow no longer has access to the WABA — the business disconnected in the app, opted out of reconnection, or Meta removed access. | `100` / subcode `33` |
+| `waba.reconnected` | `ACCOUNT_RECONNECTED`, `PARTNER_ADDED`, `PARTNER_APP_INSTALLED` | Access restored — Meta's automatic reconnection, or the business onboarded again. | — |
 
 ```json
 {
-  "event": "waba.offboarded",
+  "event": "waba.partner_removed",
   "waba_id": "123456789",
   "phone_number_id": "987654321",
-  "timestamp": 1715695200,
+  "timestamp": 1789738513,
   "data": {
     "waba_id": "123456789",
     "phone_number_id": "987654321",
+    "state": "partner_removed",
+    "previous_state": "offboarded",
+    "meta_event": "PARTNER_REMOVED",
     "reason": null,
+    "initiated_by": null,
+    "occurred_at": "2026-09-18T13:35:13.000Z",
+    "action_required": "WasapFlow no longer has access to this WABA ...",
     "raw": { ... }
   }
 }
 ```
 
-> Treat `waba.offboarded` as a **soft pause**, not a disconnection. Sending may fail until `waba.reconnected` arrives. No action is required from you — do not delete the client record.
+> **`waba.offboarded`** — pause sends for this number; they fail until `waba.reconnected`. If it is followed by `waba.partner_removed` instead, the reconnection did not happen.
+> **`waba.partner_removed`** — only the business can fix this, by completing onboarding again and selecting the **same** WABA and phone number. Re-onboarding updates the existing client record (same `id`), so **do not delete the client** first.
+> `reason` / `initiated_by` come from Meta's `disconnection_info` when Meta includes it (for example `PRIMARY_INACTIVITY` / `SYSTEM` after ~14 days of the phone being inactive).
+> Each webhook is sent once per change of state; repeated Meta events do not produce repeated webhooks.
 
 ---
 
@@ -2832,7 +3075,9 @@ Replays up to 100 failed events in chronological order.
 { "success": true, "replayed": 8, "failed": 1, "total": 9 }
 ```
 
-> Failed events are stored for **30 days**. After that they are purged automatically.
+> **Retention: 30 days.** Failed events are purged automatically 30 days after they were created, by a nightly job. Replay before then — `created_at` on each event tells you its deadline.
+>
+> The one clock that does run is Meta's: any `media_id` inside a stored payload (including `message.history` media) **expires on Meta's side about 30 days after it was issued**, regardless of when you replay. Text survives; media does not. If a backlog contains media you need, replay and download it inside that window.
 
 ---
 
