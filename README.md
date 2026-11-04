@@ -7,6 +7,8 @@
 
 > ⚠️ **Meta pricing change — effective 1 October 2026.** Service messages (non-template replies inside the 24-hour customer service window) and utility templates sent inside that window become billable. **How you send does not change** — service messages still need no template and no Meta pre-approval. Only the billing changes. See the [Changelog](?tab=changelog) for what to do now.
 
+> **New (4 November 2026) — Meta platform update, all additive:** [Marketing Messages API](#send-marketing-message-marketing-messages-api) sends (`POST /messages/marketing`, `GET /marketing-messages/status`), [Direct Send](#direct-send-utility--authentication-without-a-template) pass-through (`category`, `template_name`, `ttl`) and [OTP messages](#authentication-otp-messages-direct-send) on the text/media/interactive endpoints, static **WebP as a normal image**, [group mark-as-read](#mark-message-as-read), `messaging_account_id` on [calls](#calling), and the hosted connect popup now runs **Embedded Signup v5**. No existing request changes.
+>
 > **New (4 November 2026):** [MCP server](#use-bridge-from-your-ai-tool-mcp) for Claude Code, Cursor and Codex at `https://officialapi.wasapflow.com/bridge/mcp`, plus an [OpenAPI 3.1 spec](https://officialapi.wasapflow.com/bridge/openapi.json).
 >
 > **Also new (4 November 2026):** [Support Tickets](#support-tickets) — open, list, read and reply to support tickets from your own system or AI agent (`POST /tickets`, `GET /tickets`, `GET /tickets/{uid}`, `POST /tickets/{uid}/reply`). Additive — nothing existing changed.
@@ -57,7 +59,15 @@ For Embedded Signup, set:
 }
 ```
 
-If you self-host the Meta popup, launch it with:
+If you self-host the Meta popup, launch it with **Embedded Signup v5** — WhatsApp Business app (Coexistence) onboarding is on by default, so `featureType` and `sessionInfoVersion` are no longer needed:
+
+```json
+{
+  "version": "v5"
+}
+```
+
+The v4 extras below still work (Meta has not set a v4 end date). Read the live value from [`GET /embedded-signup/config`](#get-embedded-signup-config) rather than hard-coding either:
 
 ```json
 {
@@ -69,6 +79,8 @@ If you self-host the Meta popup, launch it with:
 ```
 
 If you use the WasapFlow hosted popup (`/bridge/connect`), this is already handled for you.
+
+> **v5 session info (self-hosted popups).** The `WA_EMBEDDED_SIGNUP` message now carries `messaging_account_ids` **instead of** `waba_id` (existing WABA IDs *are* Messaging account IDs, so read `data.waba_id || data.messaging_account_ids[0]`), plus `is_on_biz_app` and `primary_waac_ids` (empty until Meta exposes WAAC IDs). The finish event is `FINISH_WHATSAPP_BUSINESS_APP_ONBOARDING` when `is_on_biz_app` is `true` and `FINISH` otherwise; `CANCEL` and errors are unchanged. Send `connection_mode: "standard"` when `is_on_biz_app` is `false` — Bridge also checks the number with Meta and corrects the mode either way.
 
 ---
 
@@ -226,7 +238,7 @@ claude mcp add --transport http wasapflow https://officialapi.wasapflow.com/brid
 }
 ```
 
-**Tools:** `bridge_get_started`, `bridge_docs_search`, `bridge_docs_section`, `bridge_list_numbers`, `bridge_number_status`, `bridge_connect_link`, `bridge_send_text`, `bridge_send_template`, `bridge_list_templates`, `bridge_failed_webhooks`, `bridge_retry_webhooks`, `bridge_usage`, `bridge_open_ticket`, `bridge_list_tickets`, `bridge_call_api` (any endpoint).
+**Tools:** `bridge_get_started`, `bridge_docs_search`, `bridge_docs_section`, `bridge_list_numbers`, `bridge_number_status`, `bridge_connect_link`, `bridge_send_text`, `bridge_send_template`, `bridge_send_marketing`, `bridge_list_templates`, `bridge_failed_webhooks`, `bridge_retry_webhooks`, `bridge_usage`, `bridge_open_ticket`, `bridge_list_tickets`, `bridge_call_api` (any endpoint).
 
 The MCP server calls the same API as your code, with the same key, rate limits and logs. Send tools send real messages — your AI should confirm with you first.
 
@@ -498,6 +510,8 @@ Onboarding runs in your customer's browser against Meta — our server only sees
 the very end of it. Before 2.8.0 a failure inside that dialog left no record
 anywhere, so neither of us could say what went wrong. This is that record.
 
+`waba_id` is filled from v5's `messaging_account_ids[0]` when Meta no longer sends `waba_id`, and `event` now records Meta's finish event (`FINISH` / `FINISH_WHATSAPP_BUSINESS_APP_ONBOARDING`) when the popup forwards it.
+
 The same information also reaches your window live, on
 `WASAPFLOW_CONNECT_ERROR` (`meta_session_id`, `current_step`) and
 `WASAPFLOW_CONNECT_CANCEL` (`current_step`).
@@ -539,21 +553,21 @@ Returns the Meta App ID and Config ID needed for your frontend `FB.init()` and `
 
 The response also includes the recommended Coexistence `extras`. If you are self-hosting the Facebook SDK popup, pass these values into `FB.login`. If you use WasapFlow hosted popup, you do not need to handle these extras yourself.
 
-**Response:**
+**Response (4 November 2026 — Embedded Signup v5):**
 ```json
 {
   "success": true,
   "app_id": "123456789012345",
   "config_id": "987654321098765",
   "connection_mode": "coexistence",
+  "es_version": "v5",
   "extras": {
-    "setup": {},
-    "featureType": "whatsapp_business_app_onboarding",
-    "sessionInfoVersion": "3",
-    "version": "v4"
+    "version": "v5"
   }
 }
 ```
+
+`es_version` is new and tells you which Embedded Signup version `extras` is for. If we ever roll back to v4, `es_version` becomes `"v4"` and `extras` is again exactly `{"setup": {}, "featureType": "whatsapp_business_app_onboarding", "sessionInfoVersion": "3", "version": "v4"}` — so pass `extras` through unchanged and both cases work.
 
 > Also available in your **Partner Dashboard → Settings** page.
 
@@ -785,6 +799,170 @@ Supplying neither returns `MISSING_FIELDS`.
 
 ---
 
+#### Direct Send (utility & authentication without a template)
+
+*Added 4 November 2026.* Meta's **Direct Send** lets you send a free-form
+**utility** (or, in alpha, **authentication**) message **outside the 24-hour
+window without creating a template first** — Meta matches or generates the
+template for you. Bridge passes it through on `POST /messages/send`,
+`POST /messages/media` and `POST /messages/interactive`.
+
+Add these optional fields to the normal request body:
+
+| Field | Values | Sent to Meta as |
+|---|---|---|
+| `category` | `utility`, `authentication` (`service` = normal Cloud API, same as omitting it) | `category` |
+| `template_name` | `^[a-z0-9_]+$`, max 512 chars, **utility only**. Messages sent with the same name are attributed to one template | `direct_send_config.template_name` |
+| `ttl` | Whole seconds. Utility **30–43200** (12 h; Meta default 30 days); authentication **30–900** (default 600) | `ttl_seconds` |
+
+Meta's own field names (`direct_send_config`, `ttl_seconds`) are accepted too.
+**Omit all three and nothing changes** — the request Bridge sends to Meta is
+byte-for-byte what it was before.
+
+```http
+POST /messages/send
+x-partner-key: wf_xxx
+x-waba-id: 123456789
+```
+```json
+{
+  "to": "60123456789",
+  "text": "Hi Aina, your order #12345 has shipped and should arrive on 20 November.",
+  "category": "utility",
+  "template_name": "order_shipment_update",
+  "ttl": 3600
+}
+```
+
+```bash
+curl -X POST https://officialapi.wasapflow.com/bridge/v1/messages/send \
+  -H "x-partner-key: wf_xxx" -H "x-waba-id: 123456789" \
+  -H "Content-Type: application/json" \
+  -d '{"to":"60123456789","text":"Hi Aina, your order #12345 has shipped.","category":"utility","template_name":"order_shipment_update","ttl":3600}'
+```
+
+Bridge forwards this to Meta as:
+
+```js
+{ "messaging_product": "whatsapp", "to": "60123456789", "type": "text",
+  "text": { "body": "Hi Aina, your order #12345 has shipped and should arrive on 20 November." },
+  "category": "utility",
+  "direct_send_config": { "template_name": "order_shipment_update" },
+  "ttl_seconds": 3600 }
+```
+
+`preview_url` is dropped when `category` is set — Direct Send does not render
+link previews. Direct Send also accepts interactive reply / CTA URL buttons
+(up to 10, max 2 CTA, CTA first) with `text`, `image`, `video` or `document`
+headers, and a voice-call button. Meta does **not** list standalone
+image/video/document messages as Direct Send types; Bridge passes them through
+and Meta decides.
+
+**Eligibility.** Utility Direct Send is generally available to business
+portfolios with a **100,000 or unlimited** messaging limit — check the Direct
+Send banner in WhatsApp Manager. **Authentication is alpha** and needs Meta
+approval. Direct Send messages are paced at business-portfolio level; pacing
+outcomes arrive on status webhooks (`message.sent` / `message.failed`).
+
+**Checked by Bridge before calling Meta** (`400 INVALID_FIELD`, with `field`):
+unknown `category`; `template_name` or `ttl` without a Direct Send `category`;
+`template_name` with `authentication`; a bad `template_name` pattern or
+length; `ttl` out of range; `authentication` on `/messages/media`. An
+`authentication` message to a BSUID returns `400 AUTH_MESSAGE_NEEDS_PHONE` —
+OTPs need a phone number.
+
+**Meta errors Bridge names for you** (only when `category` is `utility` or
+`authentication` — every other request keeps returning `META_ERROR` exactly as
+before):
+
+| HTTP | `error.code` | Meta | Meaning / what to do |
+|---|---|---|---|
+| 400 | `DIRECT_SEND_NOT_ENABLED` | `100` "requires Direct Send, which isn't enabled" | Not eligible yet. Send an approved template (`/messages/template`) or resend without `category` |
+| 403 | `DIRECT_SEND_BLOCKED` | `139200` | Meta blocked Direct Send for misclassified content. Use approved templates |
+| 429 | `DIRECT_SEND_LIMIT_REACHED` | `131064` | Misclassification limit for the current 24 h window. `retryable: true` — after the window |
+| 409 | `TEMPLATE_NAME_CONFLICT` | `132021` | A non-Direct-Send template already has that `template_name`. Usually arrives **asynchronously** as `message.failed` |
+| 400 | `AUTH_MESSAGE_NEEDS_PHONE` | `131062` | Authentication message to a BSUID |
+
+Each also carries `meta_code` and `meta_message`.
+
+> Generated templates live under the WABA with `source=AUTO_GENERATED` in
+> Meta. Templates never used are deleted after 24 h. If a `template_name`
+> template cannot be created after 3 retries, Meta reports `131000` on the
+> error webhook.
+
+---
+
+#### Authentication (OTP) messages (Direct Send)
+
+*Added 4 November 2026 — alpha, needs Meta approval.* Send a one-time password
+with a **copy code**, **one-tap autofill** (Android) or **zero-tap** (Android)
+button through `POST /messages/interactive` with `category: "authentication"`.
+One-tap and zero-tap fall back to copy code on devices that are not eligible.
+Plain-text OTPs go through `POST /messages/send` with the same `category`.
+
+```http
+POST /messages/interactive
+x-partner-key: wf_xxx
+x-waba-id: 123456789
+```
+```json
+{
+  "to": "60123456789",
+  "category": "authentication",
+  "ttl": 600,
+  "interactive": {
+    "type": "button",
+    "body": { "text": "Your verification code is 123456." },
+    "action": {
+      "buttons": [
+        {
+          "type": "otp",
+          "otp": {
+            "code": "123456",
+            "otp_type": "copy_code",
+            "text": "Copy Code",
+            "code_expiration_minutes": 10
+          }
+        }
+      ]
+    }
+  }
+}
+```
+
+```bash
+curl -X POST https://officialapi.wasapflow.com/bridge/v1/messages/interactive \
+  -H "x-partner-key: wf_xxx" -H "x-waba-id: 123456789" \
+  -H "Content-Type: application/json" \
+  -d '{"to":"60123456789","category":"authentication","interactive":{"type":"button","body":{"text":"Your verification code is 123456."},"action":{"buttons":[{"type":"otp","otp":{"code":"123456","otp_type":"copy_code","text":"Copy Code","code_expiration_minutes":10}}]}}}'
+```
+
+**One-tap** — `"otp_type": "one_tap"` plus `autofill_text` and `supported_apps`:
+
+```js
+"otp": {
+  "code": "123456", "otp_type": "one_tap",
+  "text": "Copy Code", "autofill_text": "Autofill", "code_expiration_minutes": 10,
+  "supported_apps": [ { "package_name": "com.example.app", "signature_hash": "K8a/AINcGX7" } ]
+}
+```
+
+**Zero-tap** — as one-tap, with `"otp_type": "zero_tap"` and
+`"zero_tap_terms_accepted": true`.
+
+Bridge checks Meta's documented rules before sending (`400 INVALID_FIELD`, with
+`field`): `interactive.type` is `button`; exactly one button of `type: "otp"`;
+`otp_type` is `copy_code` | `one_tap` | `zero_tap`; `code` is 4–10 letters or
+digits and appears on its own in `body.text`; `zero_tap_terms_accepted: true`
+for zero-tap only (and always); `supported_apps` 1–5 unique apps for
+one-tap/zero-tap only (`package_name` like `com.example.app`, max 224;
+`signature_hash` exactly 11 characters); `text` / `autofill_text` max 25
+characters (`autofill_text` not on copy code); `code_expiration_minutes` 1–90
+(default 10). The recipient must be a phone number. Everything else is Meta's
+call.
+
+---
+
 #### Send Template Message
 ```http
 POST /messages/template
@@ -868,6 +1046,120 @@ POST /messages/template
 
 ---
 
+#### Send Marketing Message (Marketing Messages API)
+
+*Added 4 November 2026.* Sends an approved **MARKETING** template through
+Meta's **Marketing Messages API for WhatsApp** (formerly "MM Lite") instead of
+the Cloud API: quality-based delivery, plus MM-only features such as
+benchmarks, conversion metrics and GIF headers. Same headers, recipient rules,
+`context` and response as [`/messages/template`](#send-template-message).
+
+```http
+POST /messages/marketing
+x-partner-key: wf_xxx
+x-waba-id: 123456789
+```
+```json
+{
+  "to": "60123456789",
+  "template": {
+    "name": "raya_promo",
+    "language": { "code": "ms" },
+    "components": [
+      { "type": "body", "parameters": [ { "type": "text", "text": "Ahmad" } ] }
+    ]
+  },
+  "product_policy": "CLOUD_API_FALLBACK",
+  "message_activity_sharing": true
+}
+```
+
+```bash
+curl -X POST https://officialapi.wasapflow.com/bridge/v1/messages/marketing \
+  -H "x-partner-key: wf_xxx" -H "x-waba-id: 123456789" \
+  -H "Content-Type: application/json" \
+  -d '{"to":"60123456789","template":{"name":"raya_promo","language":{"code":"ms"}}}'
+```
+
+| Field | Required | Notes |
+|---|---|---|
+| `to` / `user_id` / `recipient` | ✅ | Phone or BSUID, same as every send endpoint |
+| `template` | ✅ | Same object as `/messages/template` — `name` and `language` required. **MARKETING** templates only; Meta rejects other categories |
+| `product_policy` | | `CLOUD_API_FALLBACK` (Meta's default): if the WABA is not onboarded, Meta delivers through Cloud API instead. `STRICT`: never fall back |
+| `message_activity_sharing` | | `true` / `false` — overrides the account default for sharing message activity (e.g. reads) with Meta |
+
+Multi-number WABAs pick the number with `x-phone-number-id`, as on every send
+endpoint. Bridge forwards the request to `POST /<PHONE_NUMBER_ID>/marketing_messages`
+as `{"messaging_product":"whatsapp","recipient_type":"individual","to":…,"type":"template","template":{…}}`
+plus the optional fields.
+
+**Response** — the same shape as `/messages/template`, including
+`message_status` when Meta is pacing the template:
+
+```json
+{
+  "success": true,
+  "waba_id": "123456789",
+  "message_id": "wamid.HBgLMTY0NjcwNDM1OTUVAgARGBI1RjQyNUE3NEYxMzAzMzQ5MkEA",
+  "messages": [ { "id": "wamid.HBgLMTY0NjcwNDM1OTUVAgARGBI1RjQyNUE3NEYxMzAzMzQ5MkEA" } ]
+}
+```
+
+**Errors** — `{"success": false, "error": {"code", "message", "meta_code", "meta_message"}}`:
+
+| HTTP | `error.code` | When |
+|---|---|---|
+| 400 | `MISSING_FIELDS` / `INVALID_FIELD` | No `template.name` / `template.language`; bad `product_policy` or `message_activity_sharing` — before Meta is called |
+| 403 | `MARKETING_MESSAGES_DISABLED` | Meta `131063`: marketing is disabled on Cloud API for this WABA **and** the Marketing Messages API terms are unsigned, so nothing can deliver it |
+| 403 | `MM_NOT_ONBOARDED` | With `STRICT` only: the send failed and the WABA is not `ONBOARDED` (`onboarding_status` says where it is) |
+| 4xx/5xx | `META_ERROR` | Anything else |
+
+**How to enable.** A user with full control of the client's business portfolio
+opens **WhatsApp Manager → Overview**, clicks **Accept terms** in Alerts and
+completes the Marketing Messages API Terms of Service. Meta then sends an
+`account_update` webhook with event `MM_LITE_TERMS_SIGNED` (forwarded as
+`waba.account_updated`). The phone number must already be on Cloud API — no
+new registration.
+
+**Pausing and resuming campaigns.** Meta pauses a template that reaches the
+lowest quality (`quality_score` `RED`, "Active – Low quality"): 3 hours the
+first time, 6 hours the second, disabled the third. Sends with a paused
+template are rejected (not billed, not counted against limits), so **halt the
+campaign** when `template.status_updated` / `template.quality_updated` reports
+the pause, and resume only once the template is Active again — it unpauses on
+its own after the window. Editing and resubmitting puts it back In Review.
+This endpoint sends one message per call; Bridge does not schedule campaigns
+on it.
+
+---
+
+#### Marketing Messages onboarding status
+
+```http
+GET /marketing-messages/status
+x-partner-key: wf_xxx
+x-waba-id: 123456789
+```
+
+Reads Meta's `marketing_messages_onboarding_status` for the WABA:
+
+```json
+{
+  "success": true,
+  "waba_id": "123456789",
+  "marketing_messages_onboarding_status": "ELIGIBLE",
+  "onboarded": false,
+  "disable_marketing_messages_on_cloud_api": false,
+  "how_to_enable": "A user with full control of the client's business portfolio opens WhatsApp Manager → Overview, clicks \"Accept terms\" in Alerts, …"
+}
+```
+
+`ONBOARDED` means ready; `ELIGIBLE` means the terms still need accepting. Other
+values are Meta's. `disable_marketing_messages_on_cloud_api` is `null` when Meta
+does not return it for this token. `how_to_enable` is omitted once onboarded.
+
+---
+
 #### Send Media (Image / Document / Audio / Video)
 
 > **Validation, and what Bridge does not check.** Bridge now rejects, before
@@ -886,11 +1178,18 @@ POST /messages/template
 >
 > | Type | MIME | Max |
 > |---|---|---|
-> | image | `image/jpeg`, `image/png` | 5 MB |
+> | image | `image/jpeg`, `image/png`, static `image/webp` (4 Nov 2026) | 5 MB |
 > | video | `video/mp4`, `video/3gpp` | 16 MB |
 > | audio | `audio/aac`, `amr`, `mpeg`, `mp4`, `ogg` | 16 MB |
 > | document | pdf, doc(x), xls(x), ppt(x), `text/plain` | 100 MB |
 > | sticker | `image/webp` | 100 KB static, 500 KB animated |
+>
+> **WebP as a normal image (4 November 2026).** Meta now accepts a **static** WebP in an `image`
+> message with the normal 5 MB image limit (Meta transcodes it to JPEG). Animated WebP, files that
+> are not valid WebP, and images over 4,096 px on an edge are rejected for `image` — send animation
+> as a `sticker`. On `/media/upload`, pass `"type": "image"` to get the 5 MB image limit for a WebP;
+> with `"type": "sticker"` **or no `type`** (the behaviour before this change) the sticker limits
+> above still apply, and an animated WebP uploaded with `"type": "image"` returns `400 INVALID_FIELD`.
 >
 > Oversize returns `MEDIA_TOO_LARGE` with `size_bytes` and `limit_bytes`.
 > An unsupported `mime_type` is refused before the file is fetched at all.
@@ -935,7 +1234,8 @@ POST /messages/media
 
 | Type | Formats | Max Size |
 |------|---------|----------|
-| `image` | JPG, PNG | 5 MB |
+| `image` | JPG, PNG, static WebP | 5 MB |
+| `sticker` | WebP | 100 KB static, 500 KB animated |
 | `document` | PDF, DOCX, XLSX, etc | 100 MB |
 | `audio` | MP3, OGG, AAC | 16 MB |
 | `video` | MP4, 3GP | 16 MB |
@@ -1066,6 +1366,11 @@ POST /messages/read
   "message_id": "wamid.xxx"
 }
 ```
+
+**Group messages too (Meta, 15 October 2026).** Send the `wamid` of a message received in a
+[group](#groups) — same request, no group id needed. Unlike a 1:1 chat, marking a group message
+read does **not** mark the earlier messages in that group, so mark each one. Messages can be
+marked within 30 days of receipt; an invalid id returns `meta_code 131009`.
 
 ---
 
@@ -1373,7 +1678,8 @@ Content-Type: application/json
 | Field | Required | Description |
 |-------|----------|-------------|
 | `url` | ✅ | Public **HTTPS** URL of the file. Bridge fetches it server-side (30s timeout). |
-| `mime_type` | ✅ | Full MIME type, e.g. `image/png`, `image/jpeg`, `application/pdf`, `video/mp4`. |
+| `mime_type` | ✅ | Full MIME type, e.g. `image/png`, `image/jpeg`, `image/webp`, `application/pdf`, `video/mp4`. |
+| `type` | | Only matters for `image/webp`: `image` = static WebP for an image message (5 MB); `sticker` or omitted = sticker limits (100 KB static / 500 KB animated). |
 
 **Response:**
 ```json
@@ -1381,7 +1687,7 @@ Content-Type: application/json
 ```
 Use the returned **`media_id`** when sending: pass it to `POST /messages/media` as `media.id`.
 
-**Limits:** image 5 MB · audio/video 16 MB · document 100 MB.
+**Limits:** image 5 MB (JPEG, PNG, static WebP with `"type": "image"`) · sticker 100 KB / 500 KB animated · audio/video 16 MB · document 100 MB.
 
 > **Media IDs** are bound to the WABA's phone number and **expire after ~30 days** on Meta's side — re-upload if stale.
 
@@ -2051,6 +2357,22 @@ x-waba-id: 123456789
 
 `action` must be one of `connect`, `pre_accept`, `accept`, `reject`, `terminate`. Terminating takes `call_id` instead of `to`.
 
+**`messaging_account_id` (Meta, 2 November 2026)** — optional on every action. It names the Messaging
+account (WABA) the call belongs to, and Meta only needs it when the access token can message on the
+number through **more than one** Messaging account; send the same value on every request for one call.
+Bridge's per-client token normally has one, so you can leave it out. When you send it, it must be the
+account id as digits (string or integer — Meta's reference shows both) or Bridge returns `INVALID_PAYLOAD`;
+it is passed to Meta unchanged.
+
+```json
+{
+  "action": "accept",
+  "call_id": "wacid.xxx",
+  "session": { "sdp_type": "answer", "sdp": "<RFC 4566 SDP>" },
+  "messaging_account_id": "123456789"
+}
+```
+
 Counts against your `rate_limit_per_sec`.
 
 ---
@@ -2058,6 +2380,8 @@ Counts against your `rate_limit_per_sec`.
 ### Groups
 
 > ⚠️ **Groups must be enabled on your number by Meta.** If it is not, Meta returns `131000 "Something went wrong"` — an unhelpful message that says nothing about the real cause. We verified this against a live WABA while building these endpoints. **That is not a Bridge bug**, and Bridge passes Meta's status through unchanged. Contact Meta to have Groups enabled.
+
+Group messages can be marked as read with [`POST /messages/read`](#mark-message-as-read) (Meta, 15 October 2026).
 
 You cannot add participants directly — that is Meta's design, not our limitation. You create a group, get an invite link, send the link, and people join themselves. You **can** remove participants.
 
@@ -2526,6 +2850,7 @@ Meta charges per **delivered** message under per-message pricing (PMP). These tw
 | `pricing.pricing_model` | `PMP` | Per-message pricing |
 | `pricing.type` | `regular`, `free_customer_service`, `free_group_customer_service`, `free_entry_point` | See below |
 | `pricing.category` | `service`, `utility`, `marketing`, `authentication`, `referral_conversion` | Which rate applies |
+| `pricing.subtype` | string, **only present when Meta sends it** (4 Nov 2026) | Meta's sub-classification, e.g. service messages that are free for eligible governments and non-profits. Passed through as received |
 | `conversation.id` | string | Meta's conversation ID |
 | `conversation.origin` | same values as `category` | What opened the conversation |
 
@@ -3165,6 +3490,14 @@ There is no automatic token expiry webhook from Meta. Build a periodic health ch
 | `400` | `PHONE_NOT_ON_WHATSAPP` | Recipient not on WhatsApp | Check with `/contacts/:phone` first |
 | `400` | `CANNOT_CANCEL` | Broadcast already started | Cannot cancel in-progress broadcast |
 | `400` | `TOO_MANY_CONTACTS` | Over 10,000 contacts | Split into multiple broadcasts |
+| `400` | `INVALID_FIELD` | A field failed validation (`error.field` names it) | Fix that field |
+| `400` | `DIRECT_SEND_NOT_ENABLED` | `category` sent but Direct Send isn't enabled (Meta `100`) | Use an approved template, or check eligibility in WhatsApp Manager |
+| `400` | `AUTH_MESSAGE_NEEDS_PHONE` | Authentication message to a BSUID (Meta `131062`) | Send a phone number in `to` |
+| `403` | `DIRECT_SEND_BLOCKED` | Meta blocked Direct Send for misclassification (`139200`) | Use approved templates |
+| `403` | `MARKETING_MESSAGES_DISABLED` | Marketing off on Cloud API and MM API terms unsigned (`131063`) | Accept terms in WhatsApp Manager |
+| `403` | `MM_NOT_ONBOARDED` | `STRICT` marketing send, WABA not onboarded | Accept terms, or drop `STRICT` |
+| `409` | `TEMPLATE_NAME_CONFLICT` | `template_name` clashes with a non-Direct-Send template (`132021`) | Pick another name |
+| `429` | `DIRECT_SEND_LIMIT_REACHED` | Direct Send misclassification limit for this 24 h window (`131064`) | Retry after the window |
 | `401` | `INVALID_KEY` | Partner key invalid | Check `x-partner-key` header |
 | `402` | `PAYMENT_REQUIRED` | Subscription unpaid | Pay invoice in Billing page |
 | `402` | `CARD_REQUIRED` | Connecting a number needs a saved card (the first number is free for 3 days) | Save a card in Billing, then retry |
