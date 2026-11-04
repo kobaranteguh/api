@@ -3167,6 +3167,7 @@ There is no automatic token expiry webhook from Meta. Build a periodic health ch
 | `400` | `TOO_MANY_CONTACTS` | Over 10,000 contacts | Split into multiple broadcasts |
 | `401` | `INVALID_KEY` | Partner key invalid | Check `x-partner-key` header |
 | `402` | `PAYMENT_REQUIRED` | Subscription unpaid | Pay invoice in Billing page |
+| `402` | `CARD_REQUIRED` | Connecting a number needs a saved card (the first number is free for 3 days) | Save a card in Billing, then retry |
 | `403` | `SUBSCRIPTION_INACTIVE` | Subscription cancelled | Resubscribe in Billing page |
 | `404` | `WABA_NOT_FOUND` | WABA not registered | Register WABA first |
 | `404` | `WABA_NOT_REGISTERED` | WABA not found for this partner | Check `x-waba-id` header |
@@ -3176,6 +3177,39 @@ There is no automatic token expiry webhook from Meta. Build a periodic health ch
 
 ---
 
+
+### `CARD_REQUIRED` (402) and the free first number
+
+A new partner account can connect its **first number free for 3 days without a card**.
+The connect call (`POST /clients/register-from-code` or `POST /clients/register`)
+succeeds and returns `free_window`:
+
+```json
+{ "success": true, "client": { "waba_id": "...", "status": "active" },
+  "free_window": { "free": true, "ends_at": "2026-11-07T09:00:00.000Z" } }
+```
+
+- One free window per account, ever, and only for the first number. A WABA, Business
+  Manager or phone number that already had a free window does not get another one.
+- Add a card before `ends_at` to keep the number. The first $10 is charged at `ends_at`,
+  then $10/month for every 3 numbers.
+- No card by `ends_at` → the number pauses: webhooks stop and sends are refused for it.
+  Nothing is deleted. Saving a card charges the first $10 and switches it back on — no reconnect.
+
+Connecting a second number without a card, or any number once the free window is used,
+returns `402 CARD_REQUIRED`:
+
+```json
+{ "success": false,
+  "error": {
+    "code": "CARD_REQUIRED",
+    "message": "Only your first number is free (until ...). Save a card to connect another number ...",
+    "free_window_ends_at": "2026-11-07T09:00:00.000Z",
+    "action_url": "/bridge/partner/billing"
+  } }
+```
+
+Save a card in the Billing page, then retry the same call.
 
 ### `PAYMENT_ACTION_REQUIRED` (402)
 
