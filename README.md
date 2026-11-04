@@ -72,11 +72,11 @@ If you use the WasapFlow hosted popup (`/bridge/connect`), this is already handl
 
 ## Where to Get Your Credentials
 
-| Credential | Location in Dashboard |
+| Credential | Location in the partner portal |
 |------------|----------------------|
-| **Partner Key** | **Dashboard** → API Credentials → Partner Key (👁️ eye icon to reveal, 📋 copy button) |
-| **Webhook Secret** | **Settings** → Webhook Security → Webhook Secret (👁️ eye icon to reveal, 📋 copy button) |
-| **Base URL** | **Dashboard** → API Credentials → Base URL |
+| **Partner Key** | **Integration** → API access → Partner Key (👁️ eye icon to reveal, 📋 copy button) |
+| **Webhook Secret** | **Integration** → Webhook → Webhook Secret (👁️ eye icon to reveal, 📋 copy button) |
+| **Base URL** | **Integration** → API access → Base URL |
 
 ---
 
@@ -2186,7 +2186,7 @@ Screenshots can be attached from the portal only. A ready-made prompt for your A
 
 **Base URL** is fixed: `https://officialapi.wasapflow.com/bridge/v1`
 
-**Webhook URL** is your own endpoint — build it, then set it in **Settings → Webhook URL**.
+**Webhook URL** is your own endpoint — build it, then set it in the portal under **Integration → Webhook**.
 
 > If you do not set a Webhook URL, you can still send messages but you will **not receive** incoming messages or delivery receipts.
 
@@ -2203,9 +2203,9 @@ app.post('/webhook/wasapflow', express.json(), (req, res) => {
 });
 ```
 
-2. Go to **Settings → Webhook URL** → enter your full public URL → Save.
+2. In the portal, open **Integration**, enter your full public URL under **Webhook URL** → Save.
 
-3. Your **Webhook Secret** is in **Settings → Webhook Security** — use it to verify requests.
+3. Your **Webhook Secret** is right below it on the same page — use it to verify requests.
 
 ---
 
