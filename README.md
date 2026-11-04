@@ -2383,6 +2383,20 @@ Counts against your `rate_limit_per_sec`.
 
 Group messages can be marked as read with [`POST /messages/read`](#mark-message-as-read) (Meta, 15 October 2026).
 
+#### Send a message to a group
+Use the normal send endpoints (`/messages/send`, `/messages/media`, `/messages/template`) with `"recipient_type": "group"` and the group ID in `to` (or pass `group_id` instead of `to`). Meta supports text, media, and text- or media-based templates in groups.
+
+```bash
+curl -X POST https://officialapi.wasapflow.com/bridge/v1/messages/send \
+  -H "x-partner-key: YOUR_PARTNER_KEY" \
+  -H "x-waba-id: 1234567890" \
+  -H "x-phone-number-id: 1098765432" \
+  -H "Content-Type: application/json" \
+  -d '{ "recipient_type": "group", "to": "Y2FwaV9ncm91cDox...", "text": "Hello everyone 👋" }'
+```
+
+Delivery status arrives on the usual webhook with `recipient_type: "group"` and the group ID as `recipient_id`. Incoming group messages carry `group_id` on the message, and `from` is the participant who wrote it.
+
 You cannot add participants directly — that is Meta's design, not our limitation. You create a group, get an invite link, send the link, and people join themselves. You **can** remove participants.
 
 #### List active groups
