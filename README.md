@@ -230,6 +230,8 @@ claude mcp add --transport http wasapflow https://officialapi.wasapflow.com/brid
 
 The MCP server calls the same API as your code, with the same key, rate limits and logs. Send tools send real messages — your AI should confirm with you first.
 
+**Starter repo:** [kobaranteguh/whatsapp-crm-starter](https://github.com/kobaranteguh/whatsapp-crm-starter) — a working Node.js WhatsApp inbox (Connect WhatsApp, signed webhooks, Coexistence, BSUID-safe contacts) with `AGENTS.md` for your AI tool. Clone it and ask your AI to extend it.
+
 **Machine-readable spec:** [OpenAPI 3.1](https://officialapi.wasapflow.com/bridge/openapi.json) · [Postman collection](https://www.postman.com/ustazzul/workspace/wasapflow-bridge-api) · [llms-full.txt](https://partner.wasapflow.com/llms-full.txt)
 
 ---
