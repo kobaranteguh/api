@@ -7,7 +7,9 @@
 
 > ⚠️ **Meta pricing change — effective 1 October 2026.** Service messages (non-template replies inside the 24-hour customer service window) and utility templates sent inside that window become billable. **How you send does not change** — service messages still need no template and no Meta pre-approval. Only the billing changes. See the [Changelog](?tab=changelog) for what to do now.
 
-> **New (4 November 2026):** [Support Tickets](#support-tickets) — open, list, read and reply to support tickets from your own system or AI agent (`POST /tickets`, `GET /tickets`, `GET /tickets/{uid}`, `POST /tickets/{uid}/reply`). Additive — nothing existing changed.
+> **New (4 November 2026):** [MCP server](#use-bridge-from-your-ai-tool-mcp) for Claude Code, Cursor and Codex at `https://officialapi.wasapflow.com/bridge/mcp`, plus an [OpenAPI 3.1 spec](https://officialapi.wasapflow.com/bridge/openapi.json).
+>
+> **Also new (4 November 2026):** [Support Tickets](#support-tickets) — open, list, read and reply to support tickets from your own system or AI agent (`POST /tickets`, `GET /tickets`, `GET /tickets/{uid}`, `POST /tickets/{uid}/reply`). Additive — nothing existing changed.
 >
 > **What's new in 2.9.0:** **32 new endpoints.** Bridge previously exposed 13 of Meta's ~38 Cloud API surfaces — the rest were never missing, just never asked for, which meant emailing us and having us run the call for you. Now open: [QR codes & short links](#qr-codes--short-links), [conversational automation](#conversational-automation) (ice breakers, commands, welcome message), [blocking](#blocked-users), [commerce settings](#commerce-settings), [call & storage settings](#settings-calling--storage), [phone number status](#phone-number-status), [WABA details, audit log, assigned users](#whatsapp-business-account), [schedules](#schedules), [Flows (read-only)](#flows-read-only), [phone number lifecycle](#phone-number-lifecycle), [calling](#calling) and [groups](#groups). Meta errors now carry `meta_code`, `meta_subcode` and `details` instead of just message text. Irreversible actions need `{"confirm": true}`.
 >
@@ -191,6 +193,44 @@ if (level === 'action_required' || level === 'breaking') {
 Notice IDs are stable forever, so you can suppress ones you have already acted on. Headers are purely additive — response bodies are unchanged, so strict body parsers and schema validators are unaffected.
 
 Full detail for every notice, plus the Meta platform calendar: **[Changelog](?tab=changelog)** (mirrored at [github.com/kobaranteguh/changelog](https://github.com/kobaranteguh/changelog)).
+
+---
+
+## Use Bridge From Your AI Tool (MCP)
+
+Building with Claude Code, Cursor, Codex, Claude Desktop or VS Code? Connect the
+**WasapFlow Bridge MCP server** and your AI can read these docs and call your
+Bridge account directly — list numbers, create a Connect WhatsApp link, send a
+test message, check failed webhooks, open a support ticket.
+
+| | |
+|---|---|
+| URL | `https://officialapi.wasapflow.com/bridge/mcp` (Streamable HTTP) |
+| Auth | Header `x-partner-key: wf_...` (or `Authorization: Bearer wf_...`) |
+| Without a key | Docs tools still work: `bridge_get_started`, `bridge_docs_search`, `bridge_docs_section` |
+
+**Claude Code**
+```bash
+claude mcp add --transport http wasapflow https://officialapi.wasapflow.com/bridge/mcp --header "x-partner-key: wf_your_partner_key"
+```
+
+**Cursor, Claude Desktop, VS Code, Windsurf** (`mcp.json`)
+```json
+{
+  "mcpServers": {
+    "wasapflow": {
+      "url": "https://officialapi.wasapflow.com/bridge/mcp",
+      "headers": { "x-partner-key": "wf_your_partner_key" }
+    }
+  }
+}
+```
+
+**Tools:** `bridge_get_started`, `bridge_docs_search`, `bridge_docs_section`, `bridge_list_numbers`, `bridge_number_status`, `bridge_connect_link`, `bridge_send_text`, `bridge_send_template`, `bridge_list_templates`, `bridge_failed_webhooks`, `bridge_retry_webhooks`, `bridge_usage`, `bridge_open_ticket`, `bridge_list_tickets`, `bridge_call_api` (any endpoint).
+
+The MCP server calls the same API as your code, with the same key, rate limits and logs. Send tools send real messages — your AI should confirm with you first.
+
+**Machine-readable spec:** [OpenAPI 3.1](https://officialapi.wasapflow.com/bridge/openapi.json) · [Postman collection](https://www.postman.com/ustazzul/workspace/wasapflow-bridge-api) · [llms-full.txt](https://partner.wasapflow.com/llms-full.txt)
 
 ---
 
