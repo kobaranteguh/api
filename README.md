@@ -139,13 +139,13 @@ The Bridge API follows standard REST semantics — your fetch wrappers, monitori
 
 | HTTP Status | Category | Example error codes |
 |------------|----------|---------------------|
-| `400 Bad Request` | Client sent malformed/missing data | `MISSING_FIELDS`, `MISSING_WABA`, `INVALID_PAYLOAD`, `CODE_EXCHANGE_FAILED` |
+| `400 Bad Request` | Client sent malformed/missing data | `MISSING_FIELDS`, `MISSING_WABA`, `INVALID_PAYLOAD`, `INVALID_FIELD`, `INVALID_IDEMPOTENCY_KEY`, `CODE_EXCHANGE_FAILED` |
 | `401 Unauthorized` | Missing or invalid `x-partner-key` | `UNAUTHORIZED`, `INVALID_PARTNER_KEY` |
 | `402 Payment Required` | Billing issue blocks the request | `TRIAL_EXPIRED`, `PAYMENT_FAILED`, `SUBSCRIPTION_CANCELLED` |
 | `403 Forbidden` | Authenticated but not allowed | `WABA_LIMIT_REACHED`, `TOO_MANY_CONTACTS`, `PARTNER_SUSPENDED` |
 | `404 Not Found` | Resource doesn't exist | `WABA_NOT_REGISTERED`, `NOT_FOUND`, `NO_ACTIVE_WABA`, `MEDIA_NOT_FOUND` |
-| `409 Conflict` | State conflict | `CANNOT_CANCEL` (broadcast already started) |
-| `429 Too Many Requests` | Rate / quota exceeded | `RATE_LIMIT_EXCEEDED`, `QUOTA_EXCEEDED` |
+| `409 Conflict` | State conflict | `CANNOT_CANCEL` (broadcast already started), `IDEMPOTENCY_KEY_REUSED`, `IDEMPOTENCY_IN_PROGRESS` |
+| `429 Too Many Requests` | Rate / quota exceeded — wait `Retry-After` seconds | `RATE_LIMIT_EXCEEDED`, `QUOTA_EXCEEDED` |
 | `500 Internal Server Error` | WasapFlow-side failure | `SERVER_ERROR`, `INTERNAL_ERROR` |
 | `502 Bad Gateway` | Upstream Meta API error | `META_ERROR` (check `meta_code` and `meta_message`) |
 | `503 Service Unavailable` | Platform not configured | `PLATFORM_NOT_CONFIGURED`, `NOT_CONFIGURED` |
@@ -240,11 +240,11 @@ claude mcp add --transport http wasapflow https://officialapi.wasapflow.com/brid
 
 **Tools:** `bridge_get_started`, `bridge_docs_search`, `bridge_docs_section`, `bridge_list_numbers`, `bridge_number_status`, `bridge_connect_link`, `bridge_send_text`, `bridge_send_template`, `bridge_send_marketing`, `bridge_list_templates`, `bridge_failed_webhooks`, `bridge_retry_webhooks`, `bridge_usage`, `bridge_open_ticket`, `bridge_list_tickets`, `bridge_call_api` (any endpoint).
 
-The MCP server calls the same API as your code, with the same key, rate limits and logs. Send tools send real messages — your AI should confirm with you first.
+The MCP server calls the same API as your code, with the same key, rate limits and logs. Send tools send real messages — your AI should confirm with you first. `bridge_send_text`, `bridge_send_template` and `bridge_send_marketing` take an optional `idempotency_key` (sent as the `Idempotency-Key` header, so a retried tool call never sends twice) and an optional `biz_opaque_callback_data` (your reference, returned on every status webhook); `bridge_call_api` accepts `idempotency_key` too.
 
 **Starter repo:** [kobaranteguh/whatsapp-crm-starter](https://github.com/kobaranteguh/whatsapp-crm-starter) — a working Node.js WhatsApp inbox (Connect WhatsApp, signed webhooks, Coexistence, BSUID-safe contacts) with `AGENTS.md` for your AI tool. Clone it and ask your AI to extend it.
 
-**Machine-readable spec:** [OpenAPI 3.1](https://officialapi.wasapflow.com/bridge/openapi.json) · [Postman collection](https://www.postman.com/ustazzul/workspace/wasapflow-bridge-api) · [llms-full.txt](https://partner.wasapflow.com/llms-full.txt)
+**Machine-readable spec:** [OpenAPI 3.1](https://officialapi.wasapflow.com/bridge/openapi.json) · [Postman collection](https://officialapi.wasapflow.com/bridge/postman.json) ([workspace](https://www.postman.com/ustazzul/workspace/wasapflow-bridge-api)) · [llms-full.txt](https://partner.wasapflow.com/llms-full.txt)
 
 ---
 
@@ -755,17 +755,65 @@ from Meta's documentation look for it there first.
 which message a status belongs to, and a `message.failed` — the only way you
 learn a send did not arrive — has nothing to attach to.
 
+#### Safe retries: `Idempotency-Key`
+
+Every send endpoint — `POST /messages/send`, `/messages/template`,
+`/messages/marketing`, `/messages/media`, `/messages/interactive`,
+`/messages/location`, `/messages/reaction`, `/messages/read` and
+`POST /broadcasts` — accepts an `Idempotency-Key` header:
+
+```
+Idempotency-Key: 5f0c1c8e-3b9e-4a59-9a63-7d2f4f6b1e21
+```
+
+| Behaviour | Result |
+|---|---|
+| Header absent | Request runs normally |
+| 1–255 characters, first use | Request runs; the response is stored for 24 hours, scoped to your partner account |
+| Same key **and** same body (same endpoint, same `x-waba-id`) within 24 h | The **original response** is returned — same HTTP status, same bytes — with header `Idempotent-Replayed: true`. Meta is **not** called again |
+| Same key, different body / endpoint / `x-waba-id` | `409 IDEMPOTENCY_KEY_REUSED` |
+| Same key while the first request is still running | `409 IDEMPOTENCY_IN_PROGRESS` with `Retry-After: 1` — repeat to get the first request's result |
+| Key empty or longer than 255 characters | `400 INVALID_IDEMPOTENCY_KEY` |
+
+`2xx` and `4xx` responses are stored. A `5xx` response is not stored, so a
+repeat with the same key performs the send again. Generate one key per logical
+message (a UUID, or your own `order-1002-confirmation`) and keep it for every
+retry of that message — after a timeout you can retry without risking a
+duplicate.
+
+#### Your own reference: `biz_opaque_callback_data`
+
+Every send endpoint accepts `biz_opaque_callback_data` — any string up to **512
+characters**. It is passed to Meta unchanged and Meta returns it on every
+status of that message, so `message.sent`, `message.delivered`,
+`message.read` and `message.failed` carry it as `data.biz_opaque_callback_data`
+(`null` when none was sent). Use it to match statuses to your own records
+without a wamid lookup.
+
+```json
+{
+  "to": "60123456789",
+  "template": { "name": "order_confirmed", "language": { "code": "en_US" } },
+  "biz_opaque_callback_data": "order-1002"
+}
+```
+
+A value that is not a string, or is longer than 512 characters, returns
+`400 INVALID_FIELD` with `"field": "biz_opaque_callback_data"`.
+
 ---
 
 #### Send Text Message
 ```http
 POST /messages/send
+Idempotency-Key: 5f0c1c8e-3b9e-4a59-9a63-7d2f4f6b1e21
 ```
 ```json
 {
   "to": "60123456789",
   "text": "Hello from my system!",
-  "preview_url": false
+  "preview_url": false,
+  "biz_opaque_callback_data": "ticket-5521"
 }
 ```
 
@@ -830,7 +878,8 @@ x-waba-id: 123456789
   "text": "Hi Aina, your order #12345 has shipped and should arrive on 20 November.",
   "category": "utility",
   "template_name": "order_shipment_update",
-  "ttl": 3600
+  "ttl": 3600,
+  "biz_opaque_callback_data": "order-12345"
 }
 ```
 
@@ -966,12 +1015,14 @@ call.
 #### Send Template Message
 ```http
 POST /messages/template
+Idempotency-Key: order-1002-confirmation
 ```
 
 **Simple template (body params only):**
 ```json
 {
   "to": "60123456789",
+  "biz_opaque_callback_data": "order-1002",
   "template": {
     "name": "order_confirmed",
     "language": "en_US",
@@ -1058,10 +1109,12 @@ benchmarks, conversion metrics and GIF headers. Same headers, recipient rules,
 POST /messages/marketing
 x-partner-key: wf_xxx
 x-waba-id: 123456789
+Idempotency-Key: raya-2026-60123456789
 ```
 ```json
 {
   "to": "60123456789",
+  "biz_opaque_callback_data": "raya-2026",
   "template": {
     "name": "raya_promo",
     "language": { "code": "ms" },
@@ -1204,12 +1257,14 @@ does not return it for this token. `how_to_enable` is omitted once onboarded.
 > name in the path if it matters.
 ```http
 POST /messages/media
+Idempotency-Key: receipt-88213
 ```
 
 **Send by URL:**
 ```json
 {
   "to": "60123456789",
+  "biz_opaque_callback_data": "receipt-88213",
   "type": "image",
   "media": {
     "link": "https://yourserver.com/image.jpg",
@@ -1245,12 +1300,14 @@ POST /messages/media
 #### Send Interactive Buttons
 ```http
 POST /messages/interactive
+Idempotency-Key: order-1002-confirm-buttons
 ```
 
 **Reply buttons (max 3):**
 ```json
 {
   "to": "60123456789",
+  "biz_opaque_callback_data": "order-1002",
   "interactive": {
     "type": "button",
     "body": { "text": "Choose an option:" },
@@ -1330,10 +1387,12 @@ Meta's own request shape. Send it exactly as Meta documents it.
 #### Send Location
 ```http
 POST /messages/location
+Idempotency-Key: store-location-60123456789
 ```
 ```json
 {
   "to": "60123456789",
+  "biz_opaque_callback_data": "store-klcc",
   "latitude": 3.1390,
   "longitude": 101.6869,
   "name": "Kuala Lumpur City Centre",
@@ -1346,12 +1405,14 @@ POST /messages/location
 #### React to a Message
 ```http
 POST /messages/reaction
+Idempotency-Key: react-wamid-xxx
 ```
 ```json
 {
   "to": "60123456789",
   "message_id": "wamid.xxx",
-  "emoji": "👍"
+  "emoji": "👍",
+  "biz_opaque_callback_data": "ticket-5521"
 }
 ```
 
@@ -1732,7 +1793,10 @@ x-waba-id: 123456789
 
 ### Broadcasts
 
-Send a single template message to a large list of recipients.
+Send a single template message to a large list of recipients. Every message
+a broadcast sends is tracked per recipient with its wamid, so failures Meta
+reports after accepting a send (for example `131049`) are counted on the
+broadcast and listed by [`GET /broadcasts/:id/recipients`](#list-broadcast-recipients).
 
 #### Create Broadcast
 ```http
@@ -1740,6 +1804,7 @@ POST /broadcasts
 x-partner-key: wf_xxx
 x-waba-id: 123456789
 Content-Type: application/json
+Idempotency-Key: raya-promo-2026-batch-1
 ```
 ```json
 {
@@ -1752,13 +1817,25 @@ Content-Type: application/json
       "parameters": [{ "type": "text", "text": "Ahmad" }]
     }
   ],
-  "contacts": ["60123456789", "60198765432"],
+  "biz_opaque_callback_data": "raya-2026",
+  "contacts": [
+    "60123456789",
+    { "phone": "60198765432", "biz_opaque_callback_data": "customer-881" },
+    { "recipient": "MY.2035200694071263", "params": [ { "type": "body", "parameters": [ { "type": "text", "text": "Aina" } ] } ] }
+  ],
   "scheduled_at": null
 }
 ```
 
-> `scheduled_at` — ISO 8601 datetime string to schedule, or `null` to start immediately.  
+> `scheduled_at` — ISO 8601 datetime string to schedule, or `null` to start immediately.
+>
 > Maximum **10,000 contacts** per broadcast.
+>
+> A contact is a phone string, or an object with `phone` / `to` / `recipient` (BSUID), optional `params` (components for that contact) and optional `biz_opaque_callback_data`.
+>
+> `biz_opaque_callback_data` on the broadcast tags every message; a contact's own value wins for that contact. Each status webhook for a broadcast message carries it plus `data.broadcast_id`.
+>
+> Repeating the request with the same `Idempotency-Key` returns the same `broadcast_id` and does not start a second broadcast.
 
 **Response:**
 ```json
@@ -1846,6 +1923,61 @@ x-waba-id: 123456789
   "progress": 100
 }
 ```
+
+**Counters:**
+
+| Field | Meaning |
+|---|---|
+| `sent` | Accepted by Meta and not failed — includes delivered and read |
+| `delivered` | Of those, delivered to the handset (or read) |
+| `failed` | Rejected at send time **or** failed later via webhook. A late failure moves one count from `sent` to `failed` |
+
+`progress` is `(sent + failed) / total` and does not change when a message fails late.
+
+---
+
+#### List Broadcast Recipients
+```http
+GET /broadcasts/:broadcastId/recipients?status=failed&limit=100&offset=0
+x-partner-key: wf_xxx
+x-waba-id: 123456789
+```
+
+| Parameter | Default | Notes |
+|-----------|---------|-------|
+| `status` | — | Optional filter: `sent`, `delivered`, `read`, `failed` |
+| `limit` | `100` | 1–1000 |
+| `offset` | `0` | |
+
+**Response:**
+```json
+{
+  "success": true,
+  "broadcast_id": "42",
+  "total": 1,
+  "limit": 100,
+  "offset": 0,
+  "has_more": false,
+  "recipients": [
+    {
+      "recipient": "60198765432",
+      "message_id": "wamid.HBgNNjAxOTg3NjU0MzIVAgARGBI5QTNDQTVCM0Q0Q0Q2RTY3RTcA",
+      "status": "failed",
+      "error_code": "131049",
+      "error_message": "This message was not delivered to maintain healthy ecosystem engagement.",
+      "biz_opaque_callback_data": "customer-881",
+      "created_at": "2026-05-14T10:00:01.000Z",
+      "updated_at": "2026-05-14T10:00:09.000Z"
+    }
+  ]
+}
+```
+
+Rows are in send order. `message_id` is `null` when Meta rejected the send
+outright (the error is on the row). Contacts with no usable recipient are
+skipped and have no row. Statuses that arrive out of order are handled: a
+`read` before `delivered` counts once. A broadcast that is not yours returns
+`404 NOT_FOUND`; an unknown `status` returns `400 INVALID_STATUS`.
 
 ---
 
@@ -2818,10 +2950,21 @@ if (event === 'message.received') {
     "recipient": "60123456789",
     "recipient_bsuid": "MY.2035200694071263",
     "timestamp": 1715695200,
-    "errors": null
+    "errors": null,
+    "biz_opaque_callback_data": "order-1002",
+    "broadcast_id": "42"
   }
 }
 ```
+
+Fields on every status event (`message.sent`, `message.delivered`,
+`message.read`, `message.failed`):
+
+| Field | Notes |
+|---|---|
+| `biz_opaque_callback_data` | The reference you passed when sending, or `null` |
+| `broadcast_id` | Present **only** when the message was sent by a broadcast |
+| `pricing`, `conversation` | See `message.delivered` below; often absent on `read` |
 
 ---
 
@@ -2959,7 +3102,8 @@ Add **`include=meta`** to also return Meta's own delivered counts for the month,
         "title": "Re-engagement message",
         "message": "More than 24 hours have passed since the customer last replied"
       }
-    ]
+    ],
+    "biz_opaque_callback_data": "order-1002"
   }
 }
 ```
@@ -3410,7 +3554,9 @@ WasapFlow's own product implements exactly this pattern; we are asking you to mi
 
 ### Failed Webhook Events (Recovery)
 
-If your endpoint was down or returned errors, failed events are stored and can be retrieved or replayed.
+If your endpoint was down or returned errors, failed events are stored, retried
+automatically for 24 hours (see [Webhook Retry Policy](#webhook-retry-policy)),
+and can be listed or replayed by hand at any time.
 
 #### List Failed Events
 ```http
@@ -3428,14 +3574,24 @@ x-partner-key: wf_xxx
       "waba_id": "123456789",
       "event": "message.received",
       "payload": { "event": "message.received", "data": { ... } },
-      "attempts": 3,
+      "attempts": 4,
       "last_error": "ECONNREFUSED",
       "status": "failed",
-      "created_at": "2026-05-15T10:00:00.000Z"
+      "created_at": "2026-05-15T10:00:00.000Z",
+      "auto_retry": {
+        "attempts": 1,
+        "next_attempt_at": "2026-05-15T10:06:00.000Z",
+        "final": false,
+        "final_at": null
+      }
     }
   ]
 }
 ```
+
+`attempts` counts every delivery attempt. `auto_retry.attempts` counts the
+scheduled retries, `next_attempt_at` is the next one, and `final: true` means
+the 24-hour schedule has ended — the event stays here for manual replay.
 
 #### Retry a Single Failed Event
 ```http
@@ -3464,13 +3620,45 @@ Replays up to 100 failed events in chronological order.
 
 ### Webhook Retry Policy
 
-| Attempt | Delay after failure |
-|---------|-------------------|
-| 1st retry | 2 seconds |
-| 2nd retry | 4 seconds |
-| 3rd retry | 8 seconds |
+An event counts as failed when your endpoint is unreachable, takes longer than
+**10 seconds**, or answers with a non-`2xx` status.
 
-After 3 failed attempts, the event is dropped and logged. Ensure your endpoint responds `200 OK` within 10 seconds.
+**Immediate attempts:** the event is sent, then retried after 2 seconds and
+again after 4 seconds (connection errors, timeouts and `5xx`; a `4xx` goes
+straight to the schedule).
+
+**Scheduled retries:** a still-failing event is stored and retried in the
+background, measured from the previous failure:
+
+| Retry | Wait |
+|-------|------|
+| 1 | 1 minute |
+| 2 | 5 minutes |
+| 3 | 15 minutes |
+| 4 | 30 minutes |
+| 5 | 1 hour |
+| 6 | 2 hours |
+| 7 | 4 hours |
+| 8 | 8 hours |
+| 9+ | every 8 hours |
+
+Scheduling stops once the next retry would fall more than **24 hours after the
+event was created**; the event then stays in [`GET /webhooks/failed`](#list-failed-events)
+for manual replay until the 30-day retention ends.
+
+- Events are retried **oldest first per partner**. When one fails, your other
+  waiting events wait for the same next retry, so they never overtake it.
+- Retried deliveries carry `x-wasapflow-delayed: retry` and
+  `x-wasapflow-retry-attempt: <n>`, keep the original `timestamp`, and are
+  signed like any other event.
+- Up to 200 events are retried per 30-second cycle across all partners, at
+  most 50 of yours.
+- Nothing is retried while your account is blocked for billing; events that
+  arrive during a block are held and delivered after payment
+  (`x-wasapflow-delayed: billing`).
+
+De-duplicate on `data.message_id` + `event` and order by `data.timestamp`: a
+retried event can arrive after a later one.
 
 ---
 
@@ -3518,7 +3706,11 @@ There is no automatic token expiry webhook from Meta. Build a periodic health ch
 | `403` | `SUBSCRIPTION_INACTIVE` | Subscription cancelled | Resubscribe in Billing page |
 | `404` | `WABA_NOT_FOUND` | WABA not registered | Register WABA first |
 | `404` | `WABA_NOT_REGISTERED` | WABA not found for this partner | Check `x-waba-id` header |
-| `429` | `RATE_LIMITED` | Too many requests | Slow down — check `Retry-After` header |
+| `400` | `INVALID_IDEMPOTENCY_KEY` | `Idempotency-Key` empty or longer than 255 characters | Use 1–255 characters |
+| `400` | `INVALID_STATUS` | Unknown `status` filter on `/broadcasts/:id/recipients` | Use `sent`, `delivered`, `read` or `failed` |
+| `409` | `IDEMPOTENCY_KEY_REUSED` | Key used in the last 24 h with a different body, endpoint or WABA | Use a new key for a new message |
+| `409` | `IDEMPOTENCY_IN_PROGRESS` | First request with this key still running | Wait `Retry-After` seconds and repeat |
+| `429` | `RATE_LIMIT_EXCEEDED` | Too many requests | Wait `Retry-After` seconds (also `error.retry_after_ms`) |
 | `500` | `META_ERROR` | Meta rejected request | Check `meta_error_code` in response |
 | `500` | `SERVER_ERROR` | Internal error | Retry — contact support if persists |
 
@@ -3708,8 +3900,25 @@ No authentication required. Use for uptime monitoring.
 
 | Setting | Default |
 |---------|---------|
-| Requests/second | 200 |
-| Response on limit | `429 Too Many Requests` with `Retry-After` header |
+| Requests/second | 200 per partner, counted in 1-second windows |
+| Applies to | `POST /messages/send`, `/messages/template`, `/messages/marketing`, `/messages/media`, `/messages/interactive`, `/messages/location`, `/messages/reaction`, `/media/upload`, `GET /media/:mediaId`, `POST /calls` |
+| Response on limit | `429 Too Many Requests`, header `Retry-After` (whole seconds, rounded up) |
+
+```json
+{
+  "success": false,
+  "error": {
+    "code": "RATE_LIMIT_EXCEEDED",
+    "message": "Rate limit exceeded. Max 200 requests/second.",
+    "retry_after_ms": 340
+  }
+}
+```
+
+A `429` is returned before anything is sent and before an `Idempotency-Key` is
+recorded, so retrying it with the same key is always safe. Meta's own
+per-number throughput limit is separate: it comes back as `META_ERROR` with
+`meta_code` `130429`.
 
 Contact support to increase your limit.
 
