@@ -25,13 +25,16 @@
 
 ## How It Works
 
-Your system connects directly to Meta's WhatsApp Cloud API — through WasapFlow's infrastructure.
+WasapFlow Bridge is a pipe between Meta's WhatsApp Cloud API and **your own system** (CRM, website or app). It provides **no inbox or chat dashboard**: conversations live in your system.
 
 ```
-Your System  →  Bridge API (officialapi.wasapflow.com)  →  Meta
+Outgoing:  Your system  →  Bridge API (officialapi.wasapflow.com/bridge/v1)  →  Meta
+Incoming:  Meta  →  WasapFlow  →  your webhook URL (signed, x-wasapflow-signature)
 ```
 
-You do not need a Meta Tech Provider account. You do not need a Meta App. Your clients register their WhatsApp Business Account (WABA) through WasapFlow's Embedded Signup flow, and you manage those WABAs directly via this API.
+You do not need a Meta Tech Provider account or a Meta App. Your clients connect their WhatsApp Business Account (WABA) through Meta Embedded Signup, started from a **Connect WhatsApp** button inside your system ([Create a Connect Session](#create-a-connect-session-260)), and you manage those WABAs via this API. The partner portal has no button to connect numbers.
+
+**Setup order:** 1. Create a free partner account. 2. Portal → **Integration**: copy the Partner Key (`x-partner-key`) and Webhook Secret into your system's `.env` (`WF_PARTNER_KEY`, `WF_WEBHOOK_SECRET`). 3. Portal → **Integration**: save your system's webhook URL. 4. Add a **Connect WhatsApp** button in your system: your server calls `POST /connect/session` (optional `display_name`, `state`) and opens the returned `connect_url` for your client; `state` comes back when the connection completes. 5. Send with the connected number's `x-waba-id`.
 
 ---
 
@@ -78,7 +81,7 @@ The v4 extras below still work (Meta has not set a v4 end date). Read the live v
 }
 ```
 
-If you use the WasapFlow hosted popup (`/bridge/connect`), this is already handled for you.
+If you open the `connect_url` returned by [`POST /connect/session`](#create-a-connect-session-260) (the WasapFlow hosted popup), this is already handled for you.
 
 > **v5 session info (self-hosted popups).** The `WA_EMBEDDED_SIGNUP` message now carries `messaging_account_ids` **instead of** `waba_id` (existing WABA IDs *are* Messaging account IDs, so read `data.waba_id || data.messaging_account_ids[0]`), plus `is_on_biz_app` and `primary_waac_ids` (empty until Meta exposes WAAC IDs). The finish event is `FINISH_WHATSAPP_BUSINESS_APP_ONBOARDING` when `is_on_biz_app` is `true` and `FINISH` otherwise; `CANCEL` and errors are unchanged. Send `connection_mode: "standard"` when `is_on_biz_app` is `false` — Bridge also checks the number with Meta and corrects the mode either way.
 
@@ -254,16 +257,13 @@ The MCP server calls the same API as your code, with the same key, rate limits a
 headers, so use whatever HTTP client your language already has — `fetch`, `axios`,
 Guzzle, `requests`, `httpx`, `curl`. Nothing to add to `package.json`.
 
+First set your webhook URL (Portal → Integration). Then create a connect link from **your server** and open the returned `connect_url` for your client — this is what your system's **Connect WhatsApp** button does:
+
 ```bash
-curl -X POST https://officialapi.wasapflow.com/bridge/v1/clients/register   -H "x-partner-key: wf_your_key"   -H "Content-Type: application/json"   -d '{
-    "waba_id": "123456789",
-    "phone_number_id": "987654321",
-    "access_token": "EAAxxxxxxxx",
-    "display_name": "My Client Business"
-  }'
+curl -X POST https://officialapi.wasapflow.com/bridge/v1/connect/session   -H "x-partner-key: wf_your_key"   -H "Content-Type: application/json"   -d '{ "display_name": "My Client Business", "state": "your-client-id-123" }'
 ```
 
-Then send a message. Note `x-waba-id` — it picks which of your clients' numbers
+When the client finishes Meta's popup, the number is registered and its `waba_id` comes back to your page (and in `GET /clients`). Then send a message. Note `x-waba-id` — it picks which of your clients' numbers
 sends, and every endpoint below takes it:
 
 ```bash
@@ -291,14 +291,10 @@ async function bridge(path, { method = 'GET', wabaId, body } = {}) {
     return data;
 }
 
-await bridge('/clients/register', {
+// Your Connect WhatsApp button: server-side, then open connect_url for the client
+const { connect_url } = await bridge('/connect/session', {
     method: 'POST',
-    body: {
-        waba_id: '123456789',
-        phone_number_id: '987654321',
-        access_token: 'EAAxxxxxxxx',
-        display_name: 'My Client Business',
-    },
+    body: { display_name: 'My Client Business', state: 'your-client-id-123' },
 });
 
 await bridge('/messages/send', {
@@ -323,13 +319,13 @@ endpoints in this document works through it.
 
 ### Client (WABA) Management
 
-#### Register from Embedded Signup Code (Recommended)
+#### Register from Embedded Signup Code (self-hosted popups)
 ```http
 POST /clients/register-from-code
 x-partner-key: wf_xxx
 Content-Type: application/json
 ```
-Use this after your client completes the Meta Embedded Signup flow. Send the `code` from `FB.login` — WasapFlow exchanges it server-side and registers the WABA. **Your app never sees the Meta access token.**
+Only for self-hosted popups (your own `FB.login`). If you use [`POST /connect/session`](#create-a-connect-session-260) (recommended), the WasapFlow page does this step for you. Use this after your client completes the Meta Embedded Signup flow. Send the `code` from `FB.login` — WasapFlow exchanges it server-side and registers the WABA. **Your app never sees the Meta access token.**
 
 For Coexistence onboarding, include `"connection_mode": "coexistence"`. This tells WasapFlow that the client is connecting an existing WhatsApp Business App number and intends to keep the Business App usable.
 
@@ -569,7 +565,6 @@ The response also includes the recommended Coexistence `extras`. If you are self
 
 `es_version` is new and tells you which Embedded Signup version `extras` is for. If we ever roll back to v4, `es_version` becomes `"v4"` and `extras` is again exactly `{"setup": {}, "featureType": "whatsapp_business_app_onboarding", "sessionInfoVersion": "3", "version": "v4"}` — so pass `extras` through unchanged and both cases work.
 
-> Also available in your **Partner Dashboard → Settings** page.
 
 ---
 
@@ -2708,9 +2703,9 @@ Screenshots can be attached from the portal only. A ready-made prompt for your A
 
 1. Build an endpoint on your server:
 ```javascript
-app.post('/webhook/wasapflow', express.json(), (req, res) => {
-    res.status(200).send('OK'); // always respond immediately
-    const { event, waba_id, data } = req.body;
+app.post('/webhook/wasapflow', express.raw({ type: 'application/json' }), (req, res) => {  // raw body: needed to verify the signature
+    res.status(200).send('OK'); // always respond immediately (after verifying the signature, see below)
+    const { event, waba_id, data } = JSON.parse(req.body.toString('utf8'));
     // handle events below...
 });
 ```
@@ -3435,7 +3430,7 @@ Add **`include=meta`** to also return Meta's own delivered counts for the month,
 
 #### `waba.offboarded` / `waba.partner_removed` / `waba.reconnected` — Meta connection state 🆕
 
-Fired when Meta changes WasapFlow's access to a client's number. The same state is on `GET /clients` as `connection_state` (`connected`, `offboarded`, `partner_removed`) with `connection_state_at` and `connection_state_reason`, and the dashboard shows it instead of ACTIVE.
+Fired when Meta changes WasapFlow's access to a client's number. The same state is on `GET /clients` as `connection_state` (`connected`, `offboarded`, `partner_removed`) with `connection_state_at` and `connection_state_reason`, and the portal's **WABAs** page shows it instead of ACTIVE.
 
 | Webhook | Meta event | What it means | Sends fail with |
 |---|---|---|---|
@@ -3931,7 +3926,7 @@ Contact support to increase your limit.
 | Hosting | DigitalOcean (Singapore region) |
 | Token Encryption | AES-256-CBC, encrypted at rest with random IV |
 | Webhook Signing | HMAC-SHA256 |
-| API Version (Meta) | v24.0 (auto-updated by WasapFlow) |
+| API Version (Meta) | v26.0 (auto-updated by WasapFlow) |
 | Failed Events Retention | 30 days |
 
 ---
@@ -3975,7 +3970,6 @@ Still **not** available through Bridge:
 | Feature | Status | Why |
 |---------|--------|-----|
 | Flows — create / update / publish | Not planned as a proxy | Needs an endpoint you host plus an encryption key pair. Talk to us. |
-| Marketing Messages Lite (MM Lite) | Blocked | Requires Solution Partner tier, which WasapFlow does not yet hold |
 | Extended Credits | Blocked | Solution Partner tier |
 | Pre-Verified Phone Numbers | Blocked | Solution Partner tier |
 | Migration Intent (move a number between BSPs) | Roadmap | |
